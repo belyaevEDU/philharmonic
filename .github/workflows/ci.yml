@@ -37,7 +37,7 @@ jobs:
           fi
 
   lint:
-    name: golangci-lint
+    name: golangci-lint + gci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
