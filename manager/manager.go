@@ -1,10 +1,9 @@
 package manager
 
 import (
+	"github.com/belyaevedu/philharmonic/task"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
-
-	"github.com/belyaevedu/philharmonic/task"
 )
 
 type Manager struct {
