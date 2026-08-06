@@ -47,6 +47,18 @@ jobs:
           go-version: '1.26.5'
           cache: true
 
+      - name: Check import ordering
+        run: |
+          go install github.com/daixiang0/gci@latest
+          unformatted="$(gci list .)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files have improperly ordered imports:"
+            echo "$unformatted"
+            echo
+            echo "Run 'gci write .' locally and commit the result."
+            exit 1
+          fi
+
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12

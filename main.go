@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/golang-collections/collections/queue"
+	"github.com/google/uuid"
+
 	"github.com/belyaevedu/philharmonic/manager"
 	"github.com/belyaevedu/philharmonic/node"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/belyaevedu/philharmonic/worker"
-	"github.com/golang-collections/collections/queue"
-	"github.com/google/uuid"
 )
 
 func main() {
