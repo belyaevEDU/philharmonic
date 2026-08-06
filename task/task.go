@@ -19,8 +19,8 @@ const (
 
 type Task struct {
 	ID            uuid.UUID
-	name          string
-	state         State
+	Name          string
+	State         State
 	Image         string
 	Memory        int
 	Disk          int
