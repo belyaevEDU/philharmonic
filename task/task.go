@@ -97,7 +97,7 @@ func (d *Docker) Run() DockerResult {
 	}
 
 	rp := container.RestartPolicy{
-		Name: container.RestartPolicyMode(d.Config.Name),
+		Name: container.RestartPolicyMode(d.Config.RestartPolicy),
 	}
 
 	r := container.Resources{
