@@ -37,7 +37,7 @@ jobs:
           fi
 
   lint:
-    name: golangci-lint
+    name: golangci-lint + gci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -47,13 +47,25 @@ jobs:
           go-version: '1.26.5'
           cache: true
 
+      - name: Check import ordering
+        run: |
+          go install github.com/daixiang0/gci@latest
+          unformatted="$(gci list .)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files have improperly ordered imports:"
+            echo "$unformatted"
+            echo
+            echo "Run 'gci write .' locally and commit the result."
+            exit 1
+          fi
+
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12
           args: --timeout=5m
 
   build:
-    name: Build
+    name: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -68,3 +80,20 @@ jobs:
 
       - name: Build
         run: go build -v ./...
+
+  security:
+    name: gosec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.5'
+          cache: true
+
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0
+
+      - name: Run Gosec Security Checker
+        run: gosec ./...
