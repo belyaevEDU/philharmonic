@@ -93,7 +93,9 @@ type Docker struct {
 func NewDocker(c *Config) (*Docker, error) {
 	dc, err := client.New(client.FromEnv)
 	if err != nil {
-		return nil, fmt.Errorf("Error creating a docker instance: %v", err)
+		// not capitalized because linter yelled at me
+		// also if its going to outputted its going to be wrapping in an other message
+		return nil, fmt.Errorf("error creating a docker instance: %v", err)
 	}
 
 	return &Docker{
