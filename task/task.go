@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"math"
@@ -72,9 +73,33 @@ type Config struct {
 	RestartPolicy string
 }
 
+func NewConfig(t *Task) *Config {
+	return &Config{
+		Name:          t.Name,
+		ExposedPorts:  t.ExposedPorts,
+		Image:         t.Image,
+		Cpu:           t.Cpu,
+		Memory:        t.Memory,
+		Disk:          t.Disk,
+		RestartPolicy: t.RestartPolicy,
+	}
+}
+
 type Docker struct {
 	Client *client.Client
 	Config Config
+}
+
+func NewDocker(c *Config) (*Docker, error) {
+	dc, err := client.New(client.FromEnv)
+	if err != nil {
+		return nil, fmt.Errorf("Error creating a docker instance: %v", err)
+	}
+
+	return &Docker{
+		Client: dc,
+		Config: *c,
+	}, nil
 }
 
 type DockerResult struct {
