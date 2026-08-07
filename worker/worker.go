@@ -20,6 +20,10 @@ func (w *Worker) CollectStats() {
 	// collects stats
 }
 
+func (w *Worker) AddTask(t task.Task) {
+	w.Queue.Enqueue(t)
+}
+
 func (w *Worker) RunTask() {
 	// start/stops task
 }
