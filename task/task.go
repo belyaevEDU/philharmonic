@@ -105,7 +105,7 @@ func NewDocker(c *Config) (*Docker, error) {
 }
 
 type DockerResult struct {
-	ContainerId string
+	ContainerID string
 	Action      Action
 	Result      Result
 	Error       error
@@ -185,7 +185,7 @@ func (d *Docker) Run() DockerResult {
 	}
 
 	return DockerResult{
-		ContainerId: resp.ID,
+		ContainerID: resp.ID,
 		Action:      ActionStart,
 		Result:      ResultSuccess,
 	}

@@ -19,11 +19,11 @@ func main() {
 	fmt.Println("stopping")
 
 	time.Sleep(time.Second * 5)
-	fmt.Printf("stopping cntnr %s\n", createResult.ContainerId)
+	fmt.Printf("stopping cntnr %s\n", createResult.ContainerID)
 	if dockerTask == nil {
 		fmt.Println("dockertask is nil")
 	}
-	_ = stopContainer(dockerTask, createResult.ContainerId)
+	_ = stopContainer(dockerTask, createResult.ContainerID)
 }
 
 func createContainer() (*task.Docker, *task.DockerResult) {
@@ -48,7 +48,7 @@ func createContainer() (*task.Docker, *task.DockerResult) {
 		return nil, nil
 	}
 
-	fmt.Printf("Container %s is running with config %v\n", result.ContainerId, c)
+	fmt.Printf("Container %s is running with config %v\n", result.ContainerID, c)
 	return &d, &result
 }
 
@@ -59,6 +59,6 @@ func stopContainer(d *task.Docker, id string) *task.DockerResult {
 		return nil
 	}
 
-	fmt.Printf("Container %s has been stopped and removed\n", result.ContainerId)
+	fmt.Printf("Container %s has been stopped and removed\n", result.ContainerID)
 	return &result
 }
