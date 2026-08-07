@@ -2,63 +2,44 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/belyaevedu/philharmonic/task"
-	"github.com/moby/moby/client"
+	"github.com/belyaevedu/philharmonic/worker"
+	"github.com/golang-collections/collections/queue"
+	"github.com/google/uuid"
 )
 
 func main() {
-	dockerTask, createResult := createContainer()
-	if createResult != nil && createResult.Error != nil {
-		fmt.Printf("%v", createResult.Error)
-		os.Exit(1)
+	db := make(map[uuid.UUID]*task.Task)
+	w := worker.Worker{
+		Queue: *queue.New(),
+		Db:    db,
 	}
 
-	fmt.Println("stopping")
-
-	time.Sleep(time.Second * 5)
-	fmt.Printf("stopping cntnr %s\n", createResult.ContainerID)
-	if dockerTask == nil {
-		fmt.Println("dockertask is nil")
-	}
-	_ = stopContainer(dockerTask, createResult.ContainerID)
-}
-
-func createContainer() (*task.Docker, *task.DockerResult) {
-	c := task.Config{
+	t := task.Task{
+		ID:    uuid.New(),
 		Name:  "test-container-1",
-		Image: "postgres:latest",
-		Env: []string{
-			"POSTGRES_USER=philharmonic_cube",
-			"POSTGRES_PASSWORD=secret",
-		},
+		State: task.Scheduled,
+		Image: "strm/helloworld-http",
 	}
 
-	dc, _ := client.New(client.FromEnv)
-	d := task.Docker{
-		Client: dc,
-		Config: c,
-	}
-
-	result := d.Run()
+	fmt.Println("starting task")
+	w.AddTask(t)
+	result := w.RunTask()
 	if result.Error != nil {
-		fmt.Printf("%v\n", result.Error)
-		return nil, nil
+		panic(result.Error)
 	}
 
-	fmt.Printf("Container %s is running with config %v\n", result.ContainerID, c)
-	return &d, &result
-}
+	t.ContainerID = result.ContainerID
+	fmt.Printf("task %s is running in container %s\n", t.ID, t.ContainerID)
+	time.Sleep(time.Second * 60)
 
-func stopContainer(d *task.Docker, id string) *task.DockerResult {
-	result := d.Stop(id)
+	fmt.Printf("stopping task %s\n", t.ID)
+	t.State = task.Completed
+	w.AddTask(t)
+	result = w.RunTask()
 	if result.Error != nil {
-		fmt.Printf("%v\n", result.Error)
-		return nil
+		panic(result.Error)
 	}
-
-	fmt.Printf("Container %s has been stopped and removed\n", result.ContainerID)
-	return &result
 }
