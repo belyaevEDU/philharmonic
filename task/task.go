@@ -25,6 +25,15 @@ const (
 	Failed
 )
 
+type Action string
+type Result string
+
+const (
+	ActionStart   Action = "start"
+	ActionStop    Action = "stop"
+	ResultSuccess Result = "success"
+)
+
 type Task struct {
 	ID            uuid.UUID
 	Name          string
@@ -67,10 +76,10 @@ type Docker struct {
 }
 
 type DockerResult struct {
-	Error       error
-	Action      string
 	ContainerId string
-	Result      string
+	Action      Action
+	Result      Result
+	Error       error
 }
 
 func (d *Docker) Run() DockerResult {
@@ -147,7 +156,7 @@ func (d *Docker) Run() DockerResult {
 
 	return DockerResult{
 		ContainerId: resp.ID,
-		Action:      "start", // mkay
-		Result:      "success",
+		Action:      ActionStart,
+		Result:      ResultSuccess,
 	}
 }
