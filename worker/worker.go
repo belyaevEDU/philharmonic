@@ -36,7 +36,7 @@ func (w *Worker) RunTask() task.DockerResult {
 	taskQueued, ok := t.(task.Task)
 	if !ok {
 		return task.DockerResult{
-			Error: errors.New("error pulling a task off the queue: somehow there's a non-task.Task element!!!"),
+			Error: errors.New("error pulling a task off the queue: somehow there's a non-task.Task element"),
 		}
 	}
 
@@ -60,7 +60,7 @@ func (w *Worker) RunTask() task.DockerResult {
 		}
 	} else {
 		result.Error = fmt.Errorf(
-			"Invalid transition from %v to %v for task %s",
+			"invalid transition from %v to %v for task %s",
 			taskPersisted.State, taskQueued.State, taskQueued.ID.String())
 	}
 	return result
