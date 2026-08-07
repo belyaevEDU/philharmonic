@@ -131,7 +131,8 @@ func (d *Docker) Run() DockerResult {
 		return DockerResult{Error: err}
 	}
 
-	// ContainerStartResult currently doesn't hold anything
+	// As of now, ContainerStartResult contains no fields,
+	// so I don't see any reason to store it
 	_, err = d.Client.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{})
 	if err != nil {
 		log.Printf("Error starting container %s: %v\n", resp.ID, err)
@@ -159,4 +160,30 @@ func (d *Docker) Run() DockerResult {
 		Action:      ActionStart,
 		Result:      ResultSuccess,
 	}
+}
+
+func (d *Docker) Stop(id string) DockerResult {
+	log.Printf("Attempting to stop container %v", id)
+
+	ctx := context.Background()
+
+	// As of now, ContainerStopResult contains no fields,
+	// so I don't see any reason to store it
+	_, err := d.Client.ContainerStop(ctx, id, client.ContainerStopOptions{})
+	if err != nil {
+		log.Printf("Error stopping container %s: %v\n", id, err)
+		return DockerResult{Error: err}
+	}
+
+	// Same thing with ContainerStartResult and ContainerStopResult
+	_, err = d.Client.ContainerRemove(ctx, id, client.ContainerRemoveOptions{
+		RemoveVolumes: true,
+		RemoveLinks:   false,
+		Force:         false,
+	})
+	if err != nil {
+		log.Printf("Error removing container %s: %v\n", id, err)
+	}
+
+	return DockerResult{Action: ActionStop, Result: ResultSuccess, Error: nil}
 }
