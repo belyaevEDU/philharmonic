@@ -24,8 +24,27 @@ func (w *Worker) RunTask() {
 	// start/stops task
 }
 
-func (w *Worker) StartTask() {
-	// starts task
+func (w *Worker) StartTask(t task.Task) task.DockerResult {
+	t.StartTime = time.Now().UTC()
+	config := task.NewConfig(&t)
+	d, err := task.NewDocker(config)
+	if err != nil {
+		return task.DockerResult{Error: err}
+	}
+
+	result := d.Run()
+	if result.Error != nil {
+		log.Printf("Error running task %v: %v\n", t.ID, result.Error)
+		t.State = task.Failed
+		w.Db[t.ID] = &t
+		return result
+	}
+
+	t.ContainerID = result.ContainerID
+	t.State = task.Running
+	w.Db[t.ID] = &t
+
+	return result
 }
 
 func (w *Worker) StopTask(t task.Task) task.DockerResult {
