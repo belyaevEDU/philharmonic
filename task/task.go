@@ -80,7 +80,12 @@ func (d *Docker) Run() DockerResult {
 		log.Printf("Error pulling image %s: %v\n", d.Config.Image, err)
 		return DockerResult{Error: err}
 	}
-	io.Copy(os.Stdout, reader)
+
+	_, err = io.Copy(os.Stdout, reader)
+	if err != nil {
+		log.Printf("Error copying the reader for ImagePull to stdout for image %s: %v\n", d.Config.Image, err)
+		return DockerResult{Error: err}
+	}
 
 	rp := container.RestartPolicy{
 		Name: container.RestartPolicyMode(d.Config.Name),
@@ -134,7 +139,12 @@ func (d *Docker) Run() DockerResult {
 		return DockerResult{Error: err}
 	}
 
-	stdcopy.StdCopy(os.Stdout, os.Stderr, out)
+	_, err = stdcopy.StdCopy(os.Stdout, os.Stderr, out)
+	if err != nil {
+		log.Printf("Error copying the stream to stdout&stderr for container %s: %v\n", resp.ID, err)
+		return DockerResult{Error: err}
+	}
+
 	return DockerResult{
 		ContainerId: resp.ID,
 		Action:      "start", // mkay
