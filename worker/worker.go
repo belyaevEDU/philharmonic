@@ -1,6 +1,9 @@
 package worker
 
 import (
+	"log"
+	"time"
+
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
@@ -25,6 +28,23 @@ func (w *Worker) StartTask() {
 	// starts task
 }
 
-func (w *Worker) StopTask() {
-	// stops task
+func (w *Worker) StopTask(t task.Task) task.DockerResult {
+	config := task.NewConfig(&t)
+
+	d, err := task.NewDocker(config)
+	if err != nil {
+		return task.DockerResult{Error: err}
+	}
+
+	result := d.Stop(t.ContainerID)
+	if result.Error != nil {
+		log.Printf("Error stopping container %v: %v\n", t.ContainerID, result.Error)
+	}
+
+	t.FinishTime = time.Now().UTC()
+	t.State = task.Completed
+	w.Db[t.ID] = &t
+	log.Printf("Stopped and removed container %v for task %v\n", t.ContainerID, t.ID)
+
+	return result
 }
