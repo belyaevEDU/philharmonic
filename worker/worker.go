@@ -1,6 +1,8 @@
 package worker
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -24,8 +26,44 @@ func (w *Worker) AddTask(t task.Task) {
 	w.Queue.Enqueue(t)
 }
 
-func (w *Worker) RunTask() {
-	// start/stops task
+func (w *Worker) RunTask() task.DockerResult {
+	t := w.Queue.Dequeue()
+	if t == nil {
+		log.Println("No tasks in the queue")
+		return task.DockerResult{Error: nil}
+	}
+
+	taskQueued, ok := t.(task.Task)
+	if !ok {
+		return task.DockerResult{
+			Error: errors.New("error pulling a task off the queue: somehow there's a non-task.Task element!!!"),
+		}
+	}
+
+	taskPersisted := w.Db[taskQueued.ID]
+	if taskPersisted == nil {
+		taskPersisted = &taskQueued
+		w.Db[taskQueued.ID] = &taskQueued
+	}
+
+	var result task.DockerResult
+	if task.ValidStateTransition(taskPersisted.State, taskQueued.State) {
+		switch taskQueued.State {
+		case task.Scheduled:
+			result = w.StartTask(taskQueued)
+		case task.Completed:
+			result = w.StopTask(taskQueued)
+		default:
+			result.Error = fmt.Errorf(
+				"error when trying to run task %s: state machine failed on state %v",
+				taskQueued.ID.String(), taskQueued.State)
+		}
+	} else {
+		result.Error = fmt.Errorf(
+			"Invalid transition from %v to %v for task %s",
+			taskPersisted.State, taskQueued.State, taskQueued.ID.String())
+	}
+	return result
 }
 
 func (w *Worker) StartTask(t task.Task) task.DockerResult {
