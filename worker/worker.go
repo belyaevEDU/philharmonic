@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/belyaevedu/philharmonic/task"
@@ -20,6 +22,10 @@ type Worker struct {
 
 func (w *Worker) CollectStats() {
 	// collects stats
+}
+
+func (w *Worker) getTasks() []*task.Task {
+	return slices.Collect(maps.Values(w.Db))
 }
 
 func (w *Worker) AddTask(t task.Task) {
