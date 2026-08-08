@@ -25,7 +25,11 @@ func (w *Worker) CollectStats() {
 }
 
 func (w *Worker) getTasks() []*task.Task {
-	return slices.Collect(maps.Values(w.Db))
+	tasks := slices.Collect(maps.Values(w.Db))
+	if tasks == nil {
+		return []*task.Task{}
+	}
+	return tasks
 }
 
 func (w *Worker) AddTask(t task.Task) {
