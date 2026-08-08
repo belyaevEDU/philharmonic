@@ -63,7 +63,7 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		msg := "Non-UUID taskID passed in the request.\n"
 		err = httpResponseHelper(w, msg, http.StatusBadRequest)
 		if err != nil {
-			log.Printf(ErrorEncodingJsonWithTaskID, taskID, err.Error())
+			log.Printf(ErrorEncodingJson, err.Error())
 		}
 		return
 	}
