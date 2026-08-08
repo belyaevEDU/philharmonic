@@ -19,7 +19,7 @@ const (
 	// and ending with a newline character
 	ErrorUnmarshallingJson      = "Error unmarshalling body: %v\n"
 	ErrorEncodingJson           = "Error encoding a response into json: %v\n"
-	ErrorEncodingJsonWithTaskID = "Error encoding a response into json for task %s\n: %v"
+	ErrorEncodingJsonWithTaskID = "Error encoding a response into json for task %s: %v\n"
 )
 
 func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
