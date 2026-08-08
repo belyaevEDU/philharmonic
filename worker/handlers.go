@@ -48,21 +48,40 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskID")
 	if taskID == "" {
 		msg := "No taskID passed in the request.\n"
-		httpResponseHelper(w, msg, http.StatusBadRequest)
+		err := httpResponseHelper(w, msg, http.StatusBadRequest)
+		// welcome back code duplication. might want to actually return the error
+		if err != nil {
+			log.Printf(
+				"Error encoding the response into json for task %s\n: %s",
+				taskID, err.Error(),
+			)
+		}
 		return
 	}
 
 	tID, err := uuid.Parse(taskID)
 	if err != nil {
 		msg := "Non-UUID taskID passed in the request.\n"
-		httpResponseHelper(w, msg, http.StatusBadRequest)
+		err = httpResponseHelper(w, msg, http.StatusBadRequest)
+		if err != nil {
+			log.Printf(
+				"Error encoding the response into json for task %s\n: %s",
+				taskID, err.Error(),
+			)
+		}
 		return
 	}
 
 	taskToStop, exists := a.Worker.Db[tID]
 	if !exists {
 		msg := fmt.Sprintf("No task with ID %v found", tID)
-		httpResponseHelper(w, msg, http.StatusNotFound)
+		err = httpResponseHelper(w, msg, http.StatusNotFound)
+		if err != nil {
+			log.Printf(
+				"Error encoding the response into json for task %s\n: %s",
+				taskID, err.Error(),
+			)
+		}
 		return
 	}
 
