@@ -26,13 +26,22 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 	a.Worker.AddTask(te.Task)
 	log.Printf("Added task %v\n", te.Task.ID)
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(te.Task)
+	err = json.NewEncoder(w).Encode(te.Task)
+	if err != nil {
+		log.Printf(
+			"Error encoding the response into json for task %s\n: %s",
+			te.Task.ID.String(), err.Error(),
+		)
+	}
 }
 
 func (a *Api) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(a.Worker.getTasks())
+	err := json.NewEncoder(w).Encode(a.Worker.getTasks())
+	if err != nil {
+		log.Printf("Error encoding all the tasks into json")
+	}
 }
 
 func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
@@ -64,10 +73,16 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 	msg := fmt.Sprintf(
 		"Added task %v to stop container %v\n",
 		taskToStop.ID, taskToStop.ContainerID)
-	httpResponseHelper(w, msg, http.StatusNoContent)
+	err = httpResponseHelper(w, msg, http.StatusNoContent)
+	if err != nil {
+		log.Printf(
+			"Error encoding the response into json for task %s\n: %s",
+			taskID, err.Error(),
+		)
+	}
 }
 
-func httpResponseHelper(w http.ResponseWriter, message string, statusCode int) {
+func httpResponseHelper(w http.ResponseWriter, message string, statusCode int) error {
 	// moved the log here because for every call of this request
 	// im either going to log the message or not
 	// regardless of the handler
@@ -77,5 +92,11 @@ func httpResponseHelper(w http.ResponseWriter, message string, statusCode int) {
 		HTTPStatusCode: statusCode,
 		Message:        message,
 	}
-	json.NewEncoder(w).Encode(her)
+
+	err := json.NewEncoder(w).Encode(her)
+	if err != nil {
+		return fmt.Errorf("error encoding the response into json: %w", err)
+	}
+
+	return nil
 }
