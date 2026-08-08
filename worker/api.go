@@ -3,6 +3,7 @@ package worker
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -30,7 +31,20 @@ func (a *Api) initRouter() {
 	})
 }
 
-func (a *Api) Start() {
+func (a *Api) Start() error {
 	a.initRouter()
-	http.ListenAndServe(fmt.Sprintf("%s:%d", a.Address, a.Port), a.Router)
+
+	server := http.Server{
+		Addr:              fmt.Sprintf("%s:%d", a.Address, a.Port),
+		Handler:           a.Router,
+		WriteTimeout:      time.Second * 15,
+		ReadTimeout:       time.Second * 10,
+		ReadHeaderTimeout: time.Second * 10,
+	}
+
+	err := server.ListenAndServe()
+	if err != nil {
+		return fmt.Errorf("error raised when starting an http server: %w", err)
+	}
+	return nil
 }
