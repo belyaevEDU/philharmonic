@@ -111,7 +111,10 @@ func (d *Docker) Run() DockerResult {
 
 	_, err = io.Copy(os.Stdout, reader)
 	if err != nil {
-		log.Printf("Error copying the reader for ImagePull to stdout for image %s: %v\n", d.Config.Image, err)
+		log.Printf(
+			"Error copying the reader for ImagePull to stdout for image %s: %v\n",
+			d.Config.Image, err,
+		)
 		return DockerResult{Error: err}
 	}
 
@@ -170,7 +173,10 @@ func (d *Docker) Run() DockerResult {
 
 	_, err = stdcopy.StdCopy(os.Stdout, os.Stderr, out)
 	if err != nil {
-		log.Printf("Error copying the stream to stdout&stderr for container %s: %v\n", resp.ID, err)
+		log.Printf(
+			"Error copying the stream to stdout&stderr for container %s: %v\n",
+			resp.ID, err,
+		)
 		return DockerResult{Error: err}
 	}
 

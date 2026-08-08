@@ -43,7 +43,9 @@ func (w *Worker) RunTask() task.DockerResult {
 	taskQueued, ok := t.(task.Task)
 	if !ok {
 		return task.DockerResult{
-			Error: errors.New("error pulling a task off the queue: somehow there's a non-task.Task element"),
+			Error: errors.New(
+				"error pulling a task off the queue: somehow there's a non-task.Task element",
+			),
 		}
 	}
 
@@ -63,12 +65,14 @@ func (w *Worker) RunTask() task.DockerResult {
 		default:
 			result.Error = fmt.Errorf(
 				"error when trying to run task %s: state machine failed on state %v",
-				taskQueued.ID.String(), taskQueued.State)
+				taskQueued.ID.String(), taskQueued.State,
+			)
 		}
 	} else {
 		result.Error = fmt.Errorf(
 			"invalid transition from %v to %v for task %s",
-			taskPersisted.State, taskQueued.State, taskQueued.ID.String())
+			taskPersisted.State, taskQueued.State, taskQueued.ID.String(),
+		)
 	}
 	return result
 }
