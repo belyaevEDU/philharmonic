@@ -88,7 +88,10 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 func (a *Api) GetStatsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(a.Worker.Stats)
+	err := json.NewEncoder(w).Encode(a.Worker.Stats)
+	if err != nil {
+		log.Printf(ErrorEncodingJson, err)
+	}
 }
 
 func httpResponseHelper(w http.ResponseWriter, message string, statusCode int) error {
