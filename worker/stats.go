@@ -13,6 +13,15 @@ type Stats struct {
 	LoadStats *linux.LoadAvg
 }
 
+func GetStats() *Stats {
+	return &Stats{
+		MemStats:  GetMemoryInfo(),
+		DiskStats: GetDiskInfo(),
+		CpuStats:  GetCpuStats(),
+		LoadStats: GetLoadAvg(),
+	}
+}
+
 // ram-related helpers
 
 func (s *Stats) MemTotalKb() uint64 {
