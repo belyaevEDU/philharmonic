@@ -3,7 +3,6 @@ package worker
 import (
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -39,11 +38,8 @@ func (a *Api) Start() error {
 	a.initRouter()
 
 	server := http.Server{
-		Addr:              fmt.Sprintf("%s:%d", a.Address, a.Port),
-		Handler:           a.Router,
-		WriteTimeout:      time.Second * 15,
-		ReadTimeout:       time.Second * 10,
-		ReadHeaderTimeout: time.Second * 10,
+		Addr:    fmt.Sprintf("%s:%d", a.Address, a.Port),
+		Handler: a.Router,
 	}
 
 	err := server.ListenAndServe()
