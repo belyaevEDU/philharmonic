@@ -9,7 +9,7 @@ type Api struct {
 	Router  chi.Mux
 }
 
-type HTTPErrResponse struct {
+type HTTPResponse struct {
 	HTTPStatusCode int
 	Message        string
 }

@@ -17,7 +17,7 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 	err := d.Decode(&te)
 	if err != nil {
 		msg := fmt.Sprintf("Error unmarshalling body: %v\n", err)
-		httpErrResponseHelper(w, msg, http.StatusBadRequest)
+		httpResponseHelper(w, msg, http.StatusBadRequest)
 		return
 	}
 
@@ -33,13 +33,13 @@ func (a *Api) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(a.Worker.getTasks())
 }
 
-func httpErrResponseHelper(w http.ResponseWriter, message string, statusCode int) {
-	// moved the log here because i think for every call of this request
+func httpResponseHelper(w http.ResponseWriter, message string, statusCode int) {
+	// moved the log here because for every call of this request
 	// im either going to log the message or not
 	// regardless of the handler
 	log.Print(message)
 	w.WriteHeader(statusCode)
-	her := HTTPErrResponse{
+	her := HTTPResponse{
 		HTTPStatusCode: statusCode,
 		Message:        message,
 	}
