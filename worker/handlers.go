@@ -11,6 +11,12 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	ErrorUnmarshallingJson      = "Error unmarshalling body: %v\n"
+	ErrorEncodingJson           = "Error encoding a response into json: %s\n"
+	ErrorEncodingJsonWithTaskID = "Error encoding a response into json for task %s\n: %s"
+)
+
 func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
@@ -18,8 +24,8 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 	te := task.TaskEvent{}
 	err := d.Decode(&te)
 	if err != nil {
-		msg := fmt.Sprintf("Error unmarshalling body: %v\n", err)
-		httpResponseHelper(w, msg, http.StatusBadRequest)
+		msg := fmt.Sprintf(ErrorUnmarshallingJson, err)
+		err = httpResponseHelper(w, msg, http.StatusBadRequest)
 		return
 	}
 
@@ -28,10 +34,7 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 	err = json.NewEncoder(w).Encode(te.Task)
 	if err != nil {
-		log.Printf(
-			"Error encoding the response into json for task %s\n: %s",
-			te.Task.ID.String(), err.Error(),
-		)
+		log.Printf(ErrorEncodingJsonWithTaskID, te.Task.ID.String(), err.Error())
 	}
 }
 
@@ -40,7 +43,7 @@ func (a *Api) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	err := json.NewEncoder(w).Encode(a.Worker.getTasks())
 	if err != nil {
-		log.Printf("Error encoding all the tasks into json")
+		log.Printf(ErrorEncodingJson, err.Error())
 	}
 }
 
@@ -49,12 +52,8 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 	if taskID == "" {
 		msg := "No taskID passed in the request.\n"
 		err := httpResponseHelper(w, msg, http.StatusBadRequest)
-		// welcome back code duplication. might want to actually return the error
 		if err != nil {
-			log.Printf(
-				"Error encoding the response into json for task %s\n: %s",
-				taskID, err.Error(),
-			)
+			log.Printf(ErrorEncodingJson, err.Error())
 		}
 		return
 	}
@@ -64,10 +63,7 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		msg := "Non-UUID taskID passed in the request.\n"
 		err = httpResponseHelper(w, msg, http.StatusBadRequest)
 		if err != nil {
-			log.Printf(
-				"Error encoding the response into json for task %s\n: %s",
-				taskID, err.Error(),
-			)
+			log.Printf(ErrorEncodingJsonWithTaskID, taskID, err.Error())
 		}
 		return
 	}
@@ -77,10 +73,7 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		msg := fmt.Sprintf("No task with ID %v found", tID)
 		err = httpResponseHelper(w, msg, http.StatusNotFound)
 		if err != nil {
-			log.Printf(
-				"Error encoding the response into json for task %s\n: %s",
-				taskID, err.Error(),
-			)
+			log.Printf(ErrorEncodingJsonWithTaskID, taskID, err.Error())
 		}
 		return
 	}
@@ -91,13 +84,11 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 	msg := fmt.Sprintf(
 		"Added task %v to stop container %v\n",
-		taskToStop.ID, taskToStop.ContainerID)
+		taskToStop.ID, taskToStop.ContainerID,
+	)
 	err = httpResponseHelper(w, msg, http.StatusNoContent)
 	if err != nil {
-		log.Printf(
-			"Error encoding the response into json for task %s\n: %s",
-			taskID, err.Error(),
-		)
+		log.Printf(ErrorEncodingJsonWithTaskID, taskID, err.Error())
 	}
 }
 
@@ -114,7 +105,7 @@ func httpResponseHelper(w http.ResponseWriter, message string, statusCode int) e
 
 	err := json.NewEncoder(w).Encode(her)
 	if err != nil {
-		return fmt.Errorf("error encoding the response into json: %w", err)
+		return fmt.Errorf(ErrorEncodingJson, err)
 	}
 
 	return nil
