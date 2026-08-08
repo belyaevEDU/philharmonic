@@ -12,9 +12,10 @@ import (
 )
 
 const (
+	// will possibly transition to returning the errors
 	ErrorUnmarshallingJson      = "Error unmarshalling body: %v\n"
-	ErrorEncodingJson           = "Error encoding a response into json: %s\n"
-	ErrorEncodingJsonWithTaskID = "Error encoding a response into json for task %s\n: %s"
+	ErrorEncodingJson           = "Error encoding a response into json: %v\n"
+	ErrorEncodingJsonWithTaskID = "Error encoding a response into json for task %s\n: %v"
 )
 
 func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
