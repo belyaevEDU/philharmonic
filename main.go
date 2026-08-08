@@ -2,63 +2,51 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/belyaevedu/philharmonic/task"
-	"github.com/moby/moby/client"
+	"github.com/belyaevedu/philharmonic/worker"
+	"github.com/golang-collections/collections/queue"
+	"github.com/google/uuid"
 )
 
 func main() {
-	dockerTask, createResult := createContainer()
-	if createResult != nil && createResult.Error != nil {
-		fmt.Printf("%v", createResult.Error)
-		os.Exit(1)
+	host := os.Getenv("CUBE_HOST")
+	port, err := strconv.Atoi(os.Getenv("CUBE_PORT"))
+	if err != nil {
+		fmt.Printf("port string->int conversion error: %v", err)
+		return
 	}
 
-	fmt.Println("stopping")
+	fmt.Println("starting worker")
 
-	time.Sleep(time.Second * 5)
-	fmt.Printf("stopping cntnr %s\n", createResult.ContainerId)
-	if dockerTask == nil {
-		fmt.Println("dockertask is nil")
+	w := worker.Worker{
+		Queue: *queue.New(),
+		Db:    make(map[uuid.UUID]*task.Task),
 	}
-	_ = stopContainer(dockerTask, createResult.ContainerId)
+	api := worker.Api{Address: host, Port: port, Worker: &w}
+
+	go runTasks(&w)
+	err = api.Start()
+	if err != nil {
+		fmt.Printf("Error raised when starting the http server: %v", err)
+	}
 }
 
-func createContainer() (*task.Docker, *task.DockerResult) {
-	c := task.Config{
-		Name:  "test-container-1",
-		Image: "postgres:latest",
-		Env: []string{
-			"POSTGRES_USER=philharmonic_cube",
-			"POSTGRES_PASSWORD=secret",
-		},
+func runTasks(w *worker.Worker) {
+	for {
+		if w.Queue.Len() != 0 {
+			result := w.RunTask()
+			if result.Error != nil {
+				log.Printf("Error running task: %v\n", result.Error)
+			}
+		} else {
+			log.Printf("No tasks to process currently.\n")
+		}
+		log.Println("sleeping")
+		time.Sleep(time.Second * 10)
 	}
-
-	dc, _ := client.New(client.FromEnv)
-	d := task.Docker{
-		Client: dc,
-		Config: c,
-	}
-
-	result := d.Run()
-	if result.Error != nil {
-		fmt.Printf("%v\n", result.Error)
-		return nil, nil
-	}
-
-	fmt.Printf("Container %s is running with config %v\n", result.ContainerId, c)
-	return &d, &result
-}
-
-func stopContainer(d *task.Docker, id string) *task.DockerResult {
-	result := d.Stop(id)
-	if result.Error != nil {
-		fmt.Printf("%v\n", result.Error)
-		return nil
-	}
-
-	fmt.Printf("Container %s has been stopped and removed\n", result.ContainerId)
-	return &result
 }

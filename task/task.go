@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"math"
@@ -15,16 +16,6 @@ import (
 	"github.com/moby/moby/client"
 )
 
-type State int
-
-const (
-	Pending State = iota
-	Scheduled
-	Running
-	Completed
-	Failed
-)
-
 type Action string
 type Result string
 
@@ -36,11 +27,13 @@ const (
 
 type Task struct {
 	ID            uuid.UUID
+	ContainerID   string
 	Name          string
 	State         State
 	Image         string
-	Memory        int
-	Disk          int
+	Cpu           float64
+	Memory        int64
+	Disk          int64
 	ExposedPorts  network.PortSet
 	PortBindings  map[string]string
 	RestartPolicy string
@@ -70,13 +63,39 @@ type Config struct {
 	RestartPolicy string
 }
 
+func NewConfig(t *Task) *Config {
+	return &Config{
+		Name:          t.Name,
+		ExposedPorts:  t.ExposedPorts,
+		Image:         t.Image,
+		Cpu:           t.Cpu,
+		Memory:        t.Memory,
+		Disk:          t.Disk,
+		RestartPolicy: t.RestartPolicy,
+	}
+}
+
 type Docker struct {
 	Client *client.Client
 	Config Config
 }
 
+func NewDocker(c *Config) (*Docker, error) {
+	dc, err := client.New(client.FromEnv)
+	if err != nil {
+		// not capitalized because linter yelled at me
+		// also if its going to outputted its going to be wrapping in an other message
+		return nil, fmt.Errorf("error creating a docker instance: %v", err)
+	}
+
+	return &Docker{
+		Client: dc,
+		Config: *c,
+	}, nil
+}
+
 type DockerResult struct {
-	ContainerId string
+	ContainerID string
 	Action      Action
 	Result      Result
 	Error       error
@@ -92,7 +111,10 @@ func (d *Docker) Run() DockerResult {
 
 	_, err = io.Copy(os.Stdout, reader)
 	if err != nil {
-		log.Printf("Error copying the reader for ImagePull to stdout for image %s: %v\n", d.Config.Image, err)
+		log.Printf(
+			"Error copying the reader for ImagePull to stdout for image %s: %v\n",
+			d.Config.Image, err,
+		)
 		return DockerResult{Error: err}
 	}
 
@@ -151,12 +173,15 @@ func (d *Docker) Run() DockerResult {
 
 	_, err = stdcopy.StdCopy(os.Stdout, os.Stderr, out)
 	if err != nil {
-		log.Printf("Error copying the stream to stdout&stderr for container %s: %v\n", resp.ID, err)
+		log.Printf(
+			"Error copying the stream to stdout&stderr for container %s: %v\n",
+			resp.ID, err,
+		)
 		return DockerResult{Error: err}
 	}
 
 	return DockerResult{
-		ContainerId: resp.ID,
+		ContainerID: resp.ID,
 		Action:      ActionStart,
 		Result:      ResultSuccess,
 	}
