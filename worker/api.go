@@ -6,7 +6,7 @@ type Api struct {
 	Address string
 	Port    int
 	Worker  *Worker
-	Router  chi.Mux
+	Router  *chi.Mux
 }
 
 type HTTPResponse struct {
