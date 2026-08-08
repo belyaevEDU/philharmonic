@@ -13,6 +13,10 @@ import (
 
 const (
 	// will possibly transition to returning the errors
+
+	// these errors are still being straight up logged,
+	// so for the time being they are starting with an uppercase character
+	// and ending with a newline character
 	ErrorUnmarshallingJson      = "Error unmarshalling body: %v\n"
 	ErrorEncodingJson           = "Error encoding a response into json: %v\n"
 	ErrorEncodingJsonWithTaskID = "Error encoding a response into json for task %s\n: %v"
@@ -106,7 +110,9 @@ func httpResponseHelper(w http.ResponseWriter, message string, statusCode int) e
 
 	err := json.NewEncoder(w).Encode(her)
 	if err != nil {
-		return fmt.Errorf(ErrorEncodingJson, err)
+		// not using the consts due to the fact that for the time being
+		// they start with an uppercase letter and end with a newline character
+		return fmt.Errorf("error raised when encoding a response: %w", err)
 	}
 
 	return nil
