@@ -31,6 +31,9 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		msg := fmt.Sprintf(ErrorUnmarshallingJson, err)
 		err = httpResponseHelper(w, msg, http.StatusBadRequest)
+		if err != nil {
+			log.Printf(ErrorEncodingJson, err.Error())
+		}
 		return
 	}
 
