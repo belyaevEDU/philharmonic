@@ -58,31 +58,22 @@ func (a *Api) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
 func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskID")
 	if taskID == "" {
-		msg := "No taskID passed in the request.\n"
-		err := httpResponseHelper(w, msg, http.StatusBadRequest)
-		if err != nil {
-			log.Printf(ErrorEncodingJson, err.Error())
-		}
+		log.Println("No taskID passed in the request")
+		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
 	tID, err := uuid.Parse(taskID)
 	if err != nil {
-		msg := "Non-UUID taskID passed in the request.\n"
-		err = httpResponseHelper(w, msg, http.StatusBadRequest)
-		if err != nil {
-			log.Printf(ErrorEncodingJson, err.Error())
-		}
+		log.Println("Non-UUID taskID passed in the request.")
+		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
 	taskToStop, exists := a.Worker.Db[tID]
 	if !exists {
-		msg := fmt.Sprintf("No task with ID %v found", tID)
-		err = httpResponseHelper(w, msg, http.StatusNotFound)
-		if err != nil {
-			log.Printf(ErrorEncodingJsonWithTaskID, taskID, err.Error())
-		}
+		log.Printf("No task with ID %v found\n", tID)
+		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
@@ -90,14 +81,8 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 	taskCopy.State = task.Completed
 	a.Worker.AddTask(taskCopy)
 
-	msg := fmt.Sprintf(
-		"Added task %v to stop container %v\n",
-		taskToStop.ID, taskToStop.ContainerID,
-	)
-	err = httpResponseHelper(w, msg, http.StatusNoContent)
-	if err != nil {
-		log.Printf(ErrorEncodingJsonWithTaskID, taskID, err.Error())
-	}
+	log.Printf("Added task %v to stop container %v\n", taskToStop.ID, taskToStop.ContainerID)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func httpResponseHelper(w http.ResponseWriter, message string, statusCode int) error {
