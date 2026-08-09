@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	WorkerTasksURL = "http://%s/tasks/"
+	WorkerTasksURL = "http://%s/tasks"
 )
 
 type Manager struct {
