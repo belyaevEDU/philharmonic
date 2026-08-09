@@ -30,6 +30,7 @@ func main() {
 	api := worker.Api{Address: host, Port: port, Worker: &w}
 
 	go runTasks(&w)
+	go w.CollectStats()
 	err = api.Start()
 	if err != nil {
 		fmt.Printf("Error raised when starting the http server: %v", err)

@@ -85,6 +85,15 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (a *Api) GetStatsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	err := json.NewEncoder(w).Encode(a.Worker.Stats)
+	if err != nil {
+		log.Printf(ErrorEncodingJson, err)
+	}
+}
+
 func httpResponseHelper(w http.ResponseWriter, message string, statusCode int) error {
 	// moved the log here because for every call of this request
 	// im either going to log the message or not

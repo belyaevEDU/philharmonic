@@ -29,6 +29,10 @@ func (a *Api) initRouter() {
 			r.Delete("/", a.StopTaskHandler)
 		})
 	})
+
+	a.Router.Route("/stats", func(r chi.Router) {
+		r.Get("/", a.GetStatsHandler)
+	})
 }
 
 func (a *Api) Start() error {
@@ -37,9 +41,7 @@ func (a *Api) Start() error {
 	server := http.Server{
 		Addr:              fmt.Sprintf("%s:%d", a.Address, a.Port),
 		Handler:           a.Router,
-		WriteTimeout:      time.Second * 15,
-		ReadTimeout:       time.Second * 10,
-		ReadHeaderTimeout: time.Second * 10,
+		ReadHeaderTimeout: time.Second * 5,
 	}
 
 	err := server.ListenAndServe()
