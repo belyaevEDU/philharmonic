@@ -43,7 +43,44 @@ func (m *Manager) SelectWorker() string {
 }
 
 func (m *Manager) UpdateTasks() {
-	// updates tasks
+	for _, worker := range m.Workers {
+		log.Printf("Checking worker %v for task updates\n", worker)
+		url := fmt.Sprintf(WorkerTasksURL, worker)
+		// ignoring gosec's G107 since the url is not from external input, but from an internal config
+		resp, err := http.Get(url) // #nosec G107
+		if err != nil {
+			log.Printf("Error connecting to %s: %v\n", worker, err)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("Error sending request to worker %s: %v\n", worker, err)
+			continue
+		}
+
+		d := json.NewDecoder(resp.Body)
+		var tasks []*task.Task
+		err = d.Decode(&tasks)
+		if err != nil {
+			log.Printf("Error unmarshalling tasks from %s: %v", worker, err)
+			continue
+		}
+
+		for _, t := range tasks {
+			log.Printf("Attempting to update task %s\n", t.ID.String())
+
+			_, ok := m.TaskDb[t.ID]
+			if !ok {
+				log.Printf("Task with ID %s not found\n", t.ID.String())
+				return
+			}
+
+			m.TaskDb[t.ID].State = t.State
+			m.TaskDb[t.ID].StartTime = t.StartTime
+			m.TaskDb[t.ID].FinishTime = t.FinishTime
+			m.TaskDb[t.ID].ContainerID = t.ContainerID
+		}
+	}
 }
 
 func (m *Manager) SendTask() {
