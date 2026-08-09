@@ -13,6 +13,10 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	WorkerTasksURL = "http://%s/tasks/"
+)
+
 type Manager struct {
 	Pending       queue.Queue
 	TaskDb        map[uuid.UUID]*task.Task
@@ -67,7 +71,7 @@ func (m *Manager) SendTask() {
 			log.Printf("Error raised when marshalling task object %v: %v\n", t, err)
 		}
 
-		url := fmt.Sprintf("http://%s/tasks", w)
+		url := fmt.Sprintf(WorkerTasksURL, w)
 		// ignoring gosec's G107 since the url is not from external input, but from an internal config
 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 		if err != nil {
