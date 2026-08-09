@@ -68,7 +68,8 @@ func (m *Manager) SendTask() {
 		}
 
 		url := fmt.Sprintf("http://%s/tasks", w)
-		resp, err := http.Post(url, "application/json", bytes.NewBuffer(data))
+		// ignoring gosec's G107 since the url is not from external input, but from an internal config
+		resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 		if err != nil {
 			fmt.Printf("Error connecting to %v: %v\n", w, err)
 			m.Pending.Enqueue(te)
