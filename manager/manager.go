@@ -7,8 +7,8 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/belyaevedu/philharmonic/handlers"
 	"github.com/belyaevedu/philharmonic/task"
-	"github.com/belyaevedu/philharmonic/worker"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
 )
@@ -144,7 +144,7 @@ func (m *Manager) SendTask() {
 
 		d := json.NewDecoder(resp.Body)
 		if resp.StatusCode != http.StatusCreated {
-			hr := worker.HTTPResponse{}
+			hr := handlers.HTTPResponse{}
 			err := d.Decode(&e)
 			if err != nil {
 				fmt.Printf("Error decoding response: %v\n", err)
