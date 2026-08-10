@@ -69,6 +69,7 @@ func (m *Manager) AddTask(te task.TaskEvent) {
 func (m *Manager) UpdateTasks() {
 	for _, worker := range m.Workers {
 		log.Printf("Checking worker %v for task updates\n", worker)
+
 		url := fmt.Sprintf(WorkerTasksURL, worker)
 		// ignoring gosec's G107 since the url is not from external input, but from an internal config
 		resp, err := http.Get(url) // #nosec G107
