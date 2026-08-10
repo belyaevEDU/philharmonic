@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"time"
@@ -15,20 +14,28 @@ import (
 )
 
 func main() {
-	host := os.Getenv("CUBE_HOST")
-	port, err := strconv.Atoi(os.Getenv("CUBE_PORT"))
+	whost := os.Getenv("CUBE_WORKER_HOST")
+	wport, err := strconv.Atoi(os.Getenv("CUBE_WORKER_PORT"))
 	if err != nil {
 		fmt.Printf("port string->int conversion error: %v", err)
 		return
 	}
 
+	mhost := os.Getenv("CUBE_MANAGER_HOST")
+	mport, err := strconv.Atoi(os.Getenv("CUBE_MANAGER_PORT"))
+	if err != nil {
+		fmt.Printf("port string->int conversion error: %v", err)
+		return
+	}
+
+	fmt.Println("starting worker")
 	w := worker.Worker{
 		Queue: *queue.New(),
 		Db:    make(map[uuid.UUID]*task.Task),
 	}
-	api := worker.Api{Address: host, Port: port, Worker: &w}
+	api := worker.Api{Address: whost, Port: wport, Worker: &w}
 
-	go runTasks(&w)
+	go w.RunTasks()
 	go w.CollectStats()
 	go func() {
 		err = api.Start()
@@ -38,55 +45,15 @@ func main() {
 		}
 	}()
 
-	// api.Start()
-	time.Sleep(3 * time.Second)
+	time.Sleep(2 * time.Second)
 
-	workers := []string{fmt.Sprintf("%s:%d", host, port)}
+	fmt.Println("Starting manager")
+
+	workers := []string{fmt.Sprintf("%s:%d", whost, wport)}
 	m := manager.New(workers)
+	mapi := manager.Api{Address: mhost, Port: mport, Manager: m}
 
-	for i := 0; i < 3; i++ {
-		t := task.Task{
-			ID:    uuid.New(),
-			Name:  fmt.Sprintf("test-container-%d", i),
-			State: task.Scheduled,
-			Image: "strm/helloworld-http",
-		}
-		te := task.TaskEvent{
-			ID:    uuid.New(),
-			State: task.Running,
-			Task:  t,
-		}
-		m.AddTask(te)
-		m.SendTask()
-	}
-
-	go func() {
-		for {
-			fmt.Printf("[Manager] Updating tasks from %d workers\n", len(m.Workers))
-			m.UpdateTasks()
-
-			time.Sleep(10 * time.Second)
-		}
-	}()
-
-	for {
-		for _, t := range m.TaskDb {
-			fmt.Printf("[Manager] Task: id %s, state %d\n", t.ID, t.State)
-			time.Sleep(10 * time.Second)
-		}
-	}
-}
-
-func runTasks(w *worker.Worker) {
-	for {
-		if w.Queue.Len() != 0 {
-			result := w.RunTask()
-			if result.Error != nil {
-				log.Printf("Error running task: %v\n", result.Error)
-			}
-		} else {
-			log.Println("No tasks to process currently.")
-		}
-		time.Sleep(time.Second * 10)
-	}
+	go m.ProcessTasks()
+	go m.UpdateTasks()
+	mapi.Start()
 }
