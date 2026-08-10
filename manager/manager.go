@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
+	"slices"
 
 	"github.com/belyaevedu/philharmonic/handlers"
 	"github.com/belyaevedu/philharmonic/task"
@@ -64,6 +66,15 @@ func (m *Manager) SelectWorker() string {
 
 func (m *Manager) AddTask(te task.TaskEvent) {
 	m.Pending.Enqueue(te)
+}
+
+func (m *Manager) getTasks() []*task.Task {
+	tasks := slices.Collect(maps.Values(m.TaskDb))
+	if tasks == nil {
+		return []*task.Task{}
+	}
+
+	return tasks
 }
 
 func (m *Manager) UpdateTasks() {
