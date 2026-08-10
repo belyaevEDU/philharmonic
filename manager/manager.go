@@ -124,8 +124,8 @@ func (m *Manager) UpdateTasks() {
 	for {
 		log.Println("[Manager] Checking for task updates from workers")
 		m.updateTasks()
-		log.Println("Task updates completed. Sleeping for 15 seconds")
-		time.Sleep(15 * time.Second)
+		log.Println("Task updates completed. Sleeping for 10 seconds")
+		time.Sleep(10 * time.Second)
 	}
 }
 
