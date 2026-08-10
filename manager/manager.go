@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/belyaevedu/philharmonic/handlers"
 	"github.com/belyaevedu/philharmonic/task"
@@ -77,7 +78,7 @@ func (m *Manager) getTasks() []*task.Task {
 	return tasks
 }
 
-func (m *Manager) UpdateTasks() {
+func (m *Manager) updateTasks() {
 	for _, worker := range m.Workers {
 		log.Printf("Checking worker %v for task updates\n", worker)
 
@@ -119,7 +120,16 @@ func (m *Manager) UpdateTasks() {
 	}
 }
 
-func (m *Manager) SendTask() {
+func (m *Manager) UpdateTasks() {
+	for {
+		log.Println("[Manager] Checking for task updates from workers")
+		m.updateTasks()
+		log.Println("Task updates completed. Sleeping for 15 seconds")
+		time.Sleep(15 * time.Second)
+	}
+}
+
+func (m *Manager) SendWork() {
 	if m.Pending.Len() > 0 {
 		w := m.SelectWorker()
 		e := m.Pending.Dequeue()
@@ -177,5 +187,14 @@ func (m *Manager) SendTask() {
 		log.Printf("%#v\n", t) // # adds field names
 	} else {
 		log.Println("No work in the queue")
+	}
+}
+
+func (m *Manager) ProcessTasks() {
+	for {
+		log.Println("[Manager] Processing any tasks in the queue")
+		m.SendWork()
+		log.Println("Sleeping for 10 seconds")
+		time.Sleep(10 * time.Second)
 	}
 }
