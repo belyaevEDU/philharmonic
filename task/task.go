@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -78,6 +79,31 @@ func NewConfig(t *Task) *Config {
 type Docker struct {
 	Client *client.Client
 	Config Config
+}
+
+type DockerInspectResponse struct {
+	Response *container.InspectResponse
+	Error    error
+}
+
+func (d *Docker) Inspect(containerID string) DockerInspectResponse {
+	if d.Client == nil {
+		return DockerInspectResponse{
+			Error: errors.New("error inspecting a container: Docker.Client is nil"),
+		}
+	}
+
+	ctx := context.Background()
+
+	// Size controls whether the container's filesystem size should be calculated
+	cio := client.ContainerInspectOptions{Size: true}
+	resp, err := d.Client.ContainerInspect(ctx, containerID, cio)
+	if err != nil {
+		log.Printf("Error inspecting container: %v\n", err)
+		return DockerInspectResponse{Error: err}
+	}
+
+	return DockerInspectResponse{Response: &resp.Container}
 }
 
 func NewDocker(c *Config) (*Docker, error) {
