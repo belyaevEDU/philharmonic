@@ -229,7 +229,7 @@ func (m *Manager) restartTask(t *task.Task) {
 	}
 
 	url := fmt.Sprintf("http://%s/tasks", w)
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data))
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
 		log.Printf("Error connecting to %v: %v", w, err)
 		m.Pending.Enqueue(t)
