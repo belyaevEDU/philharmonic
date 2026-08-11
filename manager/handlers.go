@@ -1,10 +1,11 @@
-package worker
+package manager
 
 import (
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/belyaevedu/philharmonic/handlers"
 	"github.com/belyaevedu/philharmonic/task"
@@ -27,7 +28,7 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.Worker.AddTask(te.Task)
+	a.Manager.AddTask(te)
 	log.Printf("Added task %v\n", te.Task.ID)
 	w.WriteHeader(http.StatusCreated)
 	err = json.NewEncoder(w).Encode(te.Task)
@@ -39,7 +40,7 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 func (a *Api) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	err := json.NewEncoder(w).Encode(a.Worker.getTasks())
+	err := json.NewEncoder(w).Encode(a.Manager.getTasks())
 	if err != nil {
 		log.Printf(handlers.ErrorEncodingJson, err.Error())
 	}
@@ -60,7 +61,7 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	taskToStop, exists := a.Worker.Db[tID]
+	taskToStop, exists := a.Manager.TaskDb[tID]
 	if !exists {
 		log.Printf("No task with ID %v found\n", tID)
 		w.WriteHeader(http.StatusNotFound)
@@ -69,17 +70,16 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 	taskCopy := *taskToStop
 	taskCopy.State = task.Completed
-	a.Worker.AddTask(taskCopy)
+
+	te := task.TaskEvent{
+		ID:        uuid.New(),
+		State:     task.Completed,
+		Timestamp: time.Now(),
+		Task:      taskCopy,
+	}
+
+	a.Manager.AddTask(te)
 
 	log.Printf("Added task %v to stop container %v\n", taskToStop.ID, taskToStop.ContainerID)
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (a *Api) GetStatsHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	err := json.NewEncoder(w).Encode(a.Worker.Stats)
-	if err != nil {
-		log.Printf(handlers.ErrorEncodingJson, err)
-	}
 }
