@@ -21,24 +21,6 @@ type Worker struct {
 	TaskCount int
 }
 
-func (w *Worker) CollectStats() {
-	for {
-		log.Println("Collecting stats...")
-		w.Stats = GetStats()
-		w.Stats.TaskCount = w.TaskCount
-		time.Sleep(10 * time.Second)
-	}
-}
-
-func (w *Worker) InspectTask(t task.Task) task.DockerInspectResponse {
-	config := task.NewConfig(&t)
-	d, err := task.NewDocker(config)
-	if err != nil {
-		return task.DockerInspectResponse{Error: err}
-	}
-	return d.Inspect(t.ContainerID)
-}
-
 func (w *Worker) getTasks() []*task.Task {
 	tasks := slices.Collect(maps.Values(w.Db))
 	if tasks == nil {
@@ -155,4 +137,22 @@ func (w *Worker) RunTasks() {
 		}
 		time.Sleep(time.Second * 10)
 	}
+}
+
+func (w *Worker) CollectStats() {
+	for {
+		log.Println("Collecting stats...")
+		w.Stats = GetStats()
+		w.Stats.TaskCount = w.TaskCount
+		time.Sleep(10 * time.Second)
+	}
+}
+
+func (w *Worker) InspectTask(t task.Task) task.DockerInspectResponse {
+	config := task.NewConfig(&t)
+	d, err := task.NewDocker(config)
+	if err != nil {
+		return task.DockerInspectResponse{Error: err}
+	}
+	return d.Inspect(t.ContainerID)
 }
