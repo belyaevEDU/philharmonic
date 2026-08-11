@@ -321,7 +321,7 @@ func (m *Manager) ProcessTasks() {
 }
 
 func getHostPort(ports network.PortMap) *string {
-	for k, _ := range ports {
+	for k := range ports {
 		return &ports[k][0].HostPort // atrocious
 	}
 	return nil
