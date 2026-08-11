@@ -39,6 +39,8 @@ type Task struct {
 	PortBindings  map[string]string
 	RestartPolicy string
 	HostPorts     network.PortMap
+	HealthCheck   string // url
+	RestartCount  int
 	StartTime     time.Time
 	FinishTime    time.Time
 }
