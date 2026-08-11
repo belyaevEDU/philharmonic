@@ -11,6 +11,7 @@ import (
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
+	"github.com/moby/moby/api/types/container"
 )
 
 type Worker struct {
@@ -155,4 +156,40 @@ func (w *Worker) InspectTask(t task.Task) task.DockerInspectResponse {
 		return task.DockerInspectResponse{Error: err}
 	}
 	return d.Inspect(t.ContainerID)
+}
+
+func (w *Worker) updateTasks() {
+	for id, t := range w.Db {
+		if t.State == task.Running {
+			resp := w.InspectTask(*t)
+			if resp.Error != nil {
+				fmt.Printf("error updating task: %v\n", resp.Error)
+			}
+
+			if resp.Response == nil {
+				log.Printf("No container for running task %s\n", id)
+				w.Db[id].State = task.Failed
+			}
+
+			if resp.Response.State.Status == container.StateExited {
+				log.Printf(
+					"Container for task %s in non-running state %s",
+					id, resp.Response.State.Status,
+				)
+				w.Db[id].State = task.Failed
+			}
+
+			w.Db[id].HostPorts = resp.Response.NetworkSettings.Ports
+		}
+	}
+}
+
+func (w *Worker) UpdateTasks() {
+	for {
+		log.Println("Checking status of tasks")
+		w.updateTasks()
+		log.Println("Task updates completed")
+		log.Println("Sleeping for 10 seconds...")
+		time.Sleep(10 * time.Second)
+	}
 }
