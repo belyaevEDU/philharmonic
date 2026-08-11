@@ -3,21 +3,27 @@ package manager
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/belyaevedu/philharmonic/handlers"
 	"github.com/belyaevedu/philharmonic/task"
+	"github.com/belyaevedu/philharmonic/worker"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
+	"github.com/moby/moby/api/types/network"
 )
 
 const (
 	WorkerTasksURL = "http://%s/tasks"
+
+	HealthCheckFailCap = 3
 )
 
 type Manager struct {
@@ -190,6 +196,121 @@ func (m *Manager) UpdateTasks() {
 	}
 }
 
+func (m *Manager) DoHealthChecks() {
+	for {
+		log.Println("Performing task health check")
+		m.doHealthChecks()
+		log.Println("Task health checks completed")
+		log.Println("Sleeping for 60 seconds")
+		time.Sleep(60 * time.Second) // this is in dire need of a rewrite
+	}
+}
+
+func (m *Manager) restartTask(t *task.Task) {
+	w := m.TaskWorkerMap[t.ID]
+	t.State = task.Scheduled
+	t.RestartCount++
+
+	m.TaskDb[t.ID] = t
+
+	te := task.TaskEvent{
+		ID:        uuid.New(),
+		State:     task.Running,
+		Timestamp: time.Now(),
+		Task:      *t,
+	}
+
+	data, err := json.Marshal(te)
+	if err != nil {
+		// just rewrite it to return the errors
+		// fuck you tim boring
+		log.Printf("Unable to marshal task object: %v\n", t)
+		return
+	}
+
+	url := fmt.Sprintf("http://%s/tasks", w)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		log.Printf("Error connecting to %v: %v", w, err)
+		m.Pending.Enqueue(t)
+		return
+	}
+
+	d := json.NewDecoder(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		hr := worker.HTTPResponse{}
+		err := d.Decode(&hr)
+		if err != nil {
+			fmt.Printf("Error decoding response: %v\n", err)
+			return
+		}
+		log.Printf("Response error (%d): %s", hr.HTTPStatusCode, hr.Message)
+		return
+	}
+
+	newTask := task.Task{}
+	err = d.Decode(&newTask)
+	if err != nil {
+		fmt.Printf("Error decoding response: %v\n", err)
+		return
+	}
+
+	// tim boring wanted to output the variable 't' here
+	// the fuck is that for????
+	// just an abundance of terrible design choices i'll have to overcome
+	// some of them i've already refactored
+	// a learning experience some might say
+	log.Printf("%#v\n", newTask)
+}
+
+func (m *Manager) checkTaskHealth(t task.Task) error {
+	log.Printf("Calling health check for task %s: %s\n", t.ID, t.HealthCheck)
+
+	w, ok := m.TaskWorkerMap[t.ID]
+	if !ok {
+		return errors.New("error raised checking task health: task not in TaskWorkerMap")
+	}
+
+	hostPort := getHostPort(t.HostPorts)
+	worker := strings.Split(w, ":")
+	url := fmt.Sprintf("http://%s:%s%s", worker[0], *hostPort, t.HealthCheck)
+
+	log.Printf("Calling health check for task %s: %s\n", t.ID, url)
+
+	resp, err := http.Get(url) // #nosec G107
+	if err != nil {
+		msg := fmt.Sprintf("error connecting to health check %s", url)
+		log.Println(msg)
+		return errors.New(msg)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		msg := fmt.Sprintf("error: health check for task %s did not return 200", t.ID)
+		log.Println(msg)
+		return errors.New(msg)
+	}
+
+	log.Printf("Task %s health check response: %v\n", t.ID, resp.StatusCode)
+
+	return nil
+}
+
+func (m *Manager) doHealthChecks() {
+	for _, t := range m.getTasks() {
+		if t.State == task.Running && t.RestartCount < HealthCheckFailCap {
+			err := m.checkTaskHealth(*t)
+			// i'd nuke the log.printlns for every error out of there and log it here
+			if err != nil {
+				if t.RestartCount < HealthCheckFailCap {
+					m.restartTask(t)
+				}
+			}
+		} else if t.State == task.Failed && t.RestartCount < HealthCheckFailCap {
+			m.restartTask(t)
+		}
+	}
+}
+
 func (m *Manager) ProcessTasks() {
 	for {
 		log.Println("[Manager] Processing any tasks in the queue")
@@ -197,4 +318,11 @@ func (m *Manager) ProcessTasks() {
 		log.Println("Sleeping for 10 seconds")
 		time.Sleep(10 * time.Second)
 	}
+}
+
+func getHostPort(ports network.PortMap) *string {
+	for k, _ := range ports {
+		return &ports[k][0].HostPort // atrocious
+	}
+	return nil
 }
