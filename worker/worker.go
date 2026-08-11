@@ -30,6 +30,15 @@ func (w *Worker) CollectStats() {
 	}
 }
 
+func (w *Worker) InspectTask(t task.Task) task.DockerInspectResponse {
+	config := task.NewConfig(&t)
+	d, err := task.NewDocker(config)
+	if err != nil {
+		return task.DockerInspectResponse{Error: err}
+	}
+	return d.Inspect(t.ContainerID)
+}
+
 func (w *Worker) getTasks() []*task.Task {
 	tasks := slices.Collect(maps.Values(w.Db))
 	if tasks == nil {
@@ -89,7 +98,9 @@ func (w *Worker) runTask() task.DockerResult {
 
 func (w *Worker) StartTask(t task.Task) task.DockerResult {
 	t.StartTime = time.Now().UTC()
+
 	config := task.NewConfig(&t)
+
 	d, err := task.NewDocker(config)
 	if err != nil {
 		return task.DockerResult{Error: err}
@@ -126,6 +137,7 @@ func (w *Worker) StopTask(t task.Task) task.DockerResult {
 	t.FinishTime = time.Now().UTC()
 	t.State = task.Completed
 	w.Db[t.ID] = &t
+
 	log.Printf("Stopped and removed container %v for task %v\n", t.ContainerID, t.ID)
 
 	return result
