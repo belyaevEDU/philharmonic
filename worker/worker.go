@@ -191,6 +191,9 @@ func (w *Worker) updateTasks() {
 					id, resp.Response.State.Status,
 				)
 				w.Db[id].State = task.Failed
+			} else if resp.Response.State.Health != nil && resp.Response.State.Health.Status == container.Unhealthy {
+				log.Printf("Container for task %s is unhealthy", id)
+				w.Db[id].State = task.Failed
 			}
 
 			w.Db[id].HostPorts = task.PortMappingsFromPortMap(resp.Response.NetworkSettings.Ports)
