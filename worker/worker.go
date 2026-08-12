@@ -260,35 +260,63 @@ func healthCheckFailureReason(health *container.Health) string {
 }
 
 func (w *Worker) updateTasks() {
-	for id, t := range w.Db {
-		if t.State == task.Running {
-			resp := w.InspectTask(*t)
-			if resp.Error != nil {
-				fmt.Printf("error updating task: %v\n", resp.Error)
-			}
-
-			if resp.Response == nil {
-				log.Printf("No container for running task %s\n", id)
-				w.Db[id].State = task.Failed
-				w.Db[id].FailureReason = "no container found for running task"
-				continue
-			}
-
-			if resp.Response.State.Status == container.StateExited {
-				log.Printf(
-					"Container for task %s in non-running state %s",
-					id, resp.Response.State.Status,
-				)
-				w.Db[id].State = task.Failed
-				w.Db[id].FailureReason = fmt.Sprintf("container exited with code %d", resp.Response.State.ExitCode)
-			} else if resp.Response.State.Health != nil && resp.Response.State.Health.Status == container.Unhealthy {
-				log.Printf("Container for task %s is unhealthy", id)
-				w.Db[id].State = task.Failed
-				w.Db[id].FailureReason = "container reported unhealthy by the docker health check"
-			}
-
-			w.Db[id].HostPorts = task.PortMappingsFromPortMap(resp.Response.NetworkSettings.Ports)
+	w.dbMu.RLock()
+	runningTasks := make([]task.Task, 0, len(w.Db))
+	for _, persisted := range w.Db {
+		if persisted.State == task.Running {
+			runningTasks = append(runningTasks, *persisted)
 		}
+	}
+	w.dbMu.RUnlock()
+
+	for _, runningTask := range runningTasks {
+		resp := w.InspectTask(runningTask)
+		if resp.Error != nil {
+			log.Printf("error updating task %s: %v\n", runningTask.ID, resp.Error)
+		}
+
+		w.dbMu.Lock()
+		persisted, ok := w.Db[runningTask.ID]
+		if !ok || persisted.State != task.Running {
+			w.dbMu.Unlock()
+			continue
+		}
+
+		if resp.Response == nil {
+			persisted.State = task.Failed
+			if resp.Error != nil {
+				persisted.FailureReason = fmt.Sprintf("container inspection failed: %v", resp.Error)
+			} else {
+				persisted.FailureReason = "no container found for running task"
+			}
+			w.dbMu.Unlock()
+			continue
+		}
+
+		if resp.Response.State == nil {
+			persisted.State = task.Failed
+			persisted.FailureReason = "container inspection returned no state"
+			w.dbMu.Unlock()
+			continue
+		}
+
+		if resp.Response.State.Status == container.StateExited {
+			log.Printf(
+				"Container for task %s in non-running state %s",
+				runningTask.ID, resp.Response.State.Status,
+			)
+			persisted.State = task.Failed
+			persisted.FailureReason = fmt.Sprintf("container exited with code %d", resp.Response.State.ExitCode)
+		} else if resp.Response.State.Health != nil && resp.Response.State.Health.Status == container.Unhealthy {
+			log.Printf("Container for task %s is unhealthy", runningTask.ID)
+			persisted.State = task.Failed
+			persisted.FailureReason = healthCheckFailureReason(resp.Response.State.Health)
+		}
+
+		if resp.Response.NetworkSettings != nil {
+			persisted.HostPorts = task.PortMappingsFromPortMap(resp.Response.NetworkSettings.Ports)
+		}
+		w.dbMu.Unlock()
 	}
 }
 
