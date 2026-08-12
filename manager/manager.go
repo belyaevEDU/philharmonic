@@ -75,10 +75,28 @@ func (m *Manager) SelectWorker() string {
 	return m.Workers[newWorker]
 }
 
-func (m *Manager) AddTask(te task.TaskEvent) {
+func (m *Manager) AddTask(te task.TaskEvent) error {
+	// A task ID identifies one task lifecycle
+	if te.State != task.Completed && te.Task.State != task.Completed {
+		m.mu.Lock()
+		if m.TaskDb == nil {
+			m.TaskDb = make(map[uuid.UUID]*task.Task)
+		}
+		if _, exists := m.TaskDb[te.Task.ID]; exists {
+			m.mu.Unlock()
+			return fmt.Errorf("task %s already exists", te.Task.ID)
+		}
+
+		queued := te.Task
+		queued.State = task.Pending // updated, not yet sent to a worker
+		m.TaskDb[queued.ID] = &queued
+		m.mu.Unlock()
+	}
+
 	m.pendingMu.Lock()
 	m.Pending.Enqueue(te)
 	m.pendingMu.Unlock()
+	return nil
 }
 
 func (m *Manager) pendingLen() int {
