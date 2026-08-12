@@ -202,34 +202,37 @@ func (m *Manager) SendWork() {
 	}
 }
 
+func (m *Manager) fetchTasksFromWorker(worker string) ([]*task.Task, error) {
+	url := fmt.Sprintf(WorkerTasksURL, worker)
+	// ignoring gosec's G107 since the url is not from external input, but from an internal config
+	resp, err := http.Get(url) // #nosec G107
+	if err != nil {
+		return nil, fmt.Errorf("error connecting to worker: %w", err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Error closing response body: %v\n", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("worker responded with status %d", resp.StatusCode)
+	}
+
+	var tasks []*task.Task
+	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
+		return nil, fmt.Errorf("error unmarshalling tasks: %w", err)
+	}
+	return tasks, nil
+}
+
 func (m *Manager) updateTasks() {
 	for _, worker := range m.Workers {
 		log.Printf("Checking worker %v for task updates\n", worker)
 
-		url := fmt.Sprintf(WorkerTasksURL, worker)
-		// ignoring gosec's G107 since the url is not from external input, but from an internal config
-		resp, err := http.Get(url) // #nosec G107
+		tasks, err := m.fetchTasksFromWorker(worker)
 		if err != nil {
-			log.Printf("Error connecting to %s: %v\n", worker, err)
-			continue
-		}
-		defer func() {
-			err = resp.Body.Close()
-			if err != nil {
-				log.Printf("Error closing response body: %v\n", err)
-			}
-		}()
-
-		if resp.StatusCode != http.StatusOK {
-			log.Printf("Error sending request to worker %s: %v\n", worker, err)
-			continue
-		}
-
-		d := json.NewDecoder(resp.Body)
-		var tasks []*task.Task
-		err = d.Decode(&tasks)
-		if err != nil {
-			log.Printf("Error unmarshalling tasks from %s: %v", worker, err)
+			log.Printf("Error fetching tasks from %s: %v\n", worker, err)
 			continue
 		}
 
