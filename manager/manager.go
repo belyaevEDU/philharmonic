@@ -329,7 +329,7 @@ func (m *Manager) DoHealthChecks() {
 	}
 }
 
-func (m *Manager) restartTask(t task.Task) {
+func (m *Manager) restartTask(t task.Task) error {
 	m.mu.Lock()
 	w := m.TaskWorkerMap[t.ID]
 	t.State = task.Scheduled
@@ -349,18 +349,14 @@ func (m *Manager) restartTask(t task.Task) {
 
 	data, err := json.Marshal(te)
 	if err != nil {
-		// just rewrite it to return the errors
-		// fuck you tim boring
-		log.Printf("Unable to marshal task object: %v\n", t)
-		return
+		return fmt.Errorf("unable to marshal task object %s: %w\n", t.ID, err)
 	}
 
 	url := fmt.Sprintf("http://%s/tasks", w)
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
-		log.Printf("Error connecting to %v: %v", w, err)
 		m.enqueuePending(te)
-		return
+		return fmt.Errorf("error POSTing to %s: %w", w, err)
 	}
 	defer func() {
 		err = resp.Body.Close()
@@ -374,26 +370,19 @@ func (m *Manager) restartTask(t task.Task) {
 		hr := worker.HTTPResponse{}
 		err := d.Decode(&hr)
 		if err != nil {
-			fmt.Printf("Error decoding response: %v\n", err)
-			return
+			return fmt.Errorf("error decoding response: %w\n", err)
 		}
-		log.Printf("Response error (%d): %s", hr.HTTPStatusCode, hr.Message)
-		return
+		return fmt.Errorf("response error (%d): %s", hr.HTTPStatusCode, hr.Message)
 	}
 
 	newTask := task.Task{}
 	err = d.Decode(&newTask)
 	if err != nil {
-		fmt.Printf("Error decoding response: %v\n", err)
-		return
+		return fmt.Errorf("error decoding response: %w\n", err)
 	}
 
-	// tim boring wanted to output the variable 't' here
-	// the fuck is that for????
-	// just an abundance of terrible design choices i'll have to overcome
-	// some of them i've already refactored
-	// a learning experience some might say
-	log.Printf("%#v\n", newTask)
+	log.Printf("Task restarted: %#v\n", newTask)
+	return nil
 }
 
 func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
@@ -539,7 +528,10 @@ func (m *Manager) restartFailedTasks() {
 		}
 
 		if t.RestartCount < MaxRestarts {
-			m.restartTask(t)
+			err := m.restartTask(t)
+			if err != nil {
+				log.Printf("Error restarting task %s: %v", t.ID, err)
+			}
 			continue
 		}
 
@@ -621,7 +613,10 @@ func (m *Manager) runChecker(ctx context.Context, t task.Task) {
 			}
 
 			log.Printf("Task %s declared unhealthy after %d consecutive failures, restarting\n", t.ID, failures)
-			m.restartTask(t)
+			err = m.restartTask(t)
+			if err != nil {
+				log.Printf("Error restarting task %s: %v", t.ID, err)
+			}
 			return
 		}
 	}
