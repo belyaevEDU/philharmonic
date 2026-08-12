@@ -135,7 +135,18 @@ func (w *Worker) StopTask(t task.Task) task.DockerResult {
 	}
 
 	t.FinishTime = time.Now().UTC()
-	t.State = task.Completed
+
+	persisted := w.Db[t.ID]
+	switch {
+	case t.FailureReason != "":
+		t.State = task.Failed
+	case persisted != nil && persisted.State == task.Failed: // worker ahead of mngr fallback
+		t.State = task.Failed
+		t.FailureReason = persisted.FailureReason
+	default:
+		t.State = task.Completed
+	}
+
 	w.Db[t.ID] = &t
 
 	log.Printf("Stopped and removed container %v for task %v\n", t.ContainerID, t.ID)
