@@ -35,6 +35,50 @@ type PortMapping struct {
 	Protocol      network.IPProtocol
 }
 
+type HealthCheckType string
+
+const (
+	HealthCheckHTTP HealthCheckType = "http"
+	HealthCheckTCP  HealthCheckType = "tcp"
+	HealthCheckExec HealthCheckType = "exec"
+
+	HealthCheckDefaultInterval    = 30
+	HealthCheckDefaultTimeout     = 5
+	HealthCheckDefaultRetries     = 3
+	HealthCheckDefaultStartPeriod = 0
+)
+
+type HealthCheck struct {
+	Type        HealthCheckType
+	Port        int
+	Path        string
+	Command     []string
+	Interval    int
+	Timeout     int
+	Retries     int
+	StartPeriod int
+}
+
+func (h *HealthCheck) Normalized() HealthCheck {
+	n := HealthCheck{}
+	if h != nil {
+		n = *h
+	}
+	if n.Interval <= 0 {
+		n.Interval = HealthCheckDefaultInterval
+	}
+	if n.Timeout <= 0 {
+		n.Timeout = HealthCheckDefaultTimeout
+	}
+	if n.Retries <= 0 {
+		n.Retries = HealthCheckDefaultRetries
+	}
+	if n.StartPeriod < 0 {
+		n.StartPeriod = HealthCheckDefaultStartPeriod
+	}
+	return n
+}
+
 type Task struct {
 	ID            uuid.UUID
 	ContainerID   string
@@ -47,7 +91,7 @@ type Task struct {
 	Ports         []PortMapping
 	RestartPolicy string
 	HostPorts     []PortMapping // resolved bindings reported by the daemon
-	HealthCheck   string        // url
+	HealthCheck   *HealthCheck
 	RestartCount  int
 	StartTime     time.Time
 	FinishTime    time.Time
@@ -73,6 +117,7 @@ type Config struct {
 	Disk          int64
 	Env           []string
 	RestartPolicy string
+	HealthCheck   *HealthCheck
 }
 
 func NewConfig(t *Task) *Config {
@@ -84,6 +129,7 @@ func NewConfig(t *Task) *Config {
 		Memory:        t.Memory,
 		Disk:          t.Disk,
 		RestartPolicy: t.RestartPolicy,
+		HealthCheck:   t.HealthCheck,
 	}
 }
 
@@ -153,6 +199,23 @@ func PortMappingsFromPortMap(ports network.PortMap) []PortMapping {
 	})
 
 	return out
+}
+
+// "exec" probes are managed by Docker, "http"/"tcp" are done by the manager
+func (c *Config) dockerHealthcheck() *container.HealthConfig {
+	hc := c.HealthCheck
+	if hc == nil || hc.Type != HealthCheckExec || len(hc.Command) == 0 {
+		return nil
+	}
+
+	n := hc.Normalized()
+	return &container.HealthConfig{
+		Test:        append([]string{"CMD"}, n.Command...),
+		Interval:    time.Duration(n.Interval) * time.Second,
+		Timeout:     time.Duration(n.Timeout) * time.Second,
+		StartPeriod: time.Duration(n.StartPeriod) * time.Second,
+		Retries:     n.Retries,
+	}
 }
 
 type Docker struct {
@@ -243,6 +306,7 @@ func (d *Docker) Run() DockerResult {
 		Tty:          false,
 		Env:          d.Config.Env,
 		ExposedPorts: exposed,
+		Healthcheck:  d.Config.dockerHealthcheck(),
 	}
 
 	hc := container.HostConfig{
