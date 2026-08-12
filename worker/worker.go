@@ -170,7 +170,15 @@ func (w *Worker) StartTask(t task.Task) task.DockerResult {
 
 	if t.ContainerID != "" {
 		log.Printf("Removing container %s of task %s before (re)starting it\n", t.ContainerID, t.ID)
-		d.Stop(t.ContainerID)
+		stopResult := d.Stop(t.ContainerID)
+		if stopResult.Error != nil {
+			log.Printf("Error removing previous container %s for task %s: %v\n", t.ContainerID, t.ID, stopResult.Error)
+			t.State = task.Failed
+			t.FailureReason = fmt.Sprintf("could not remove previous container: %v", stopResult.Error)
+			w.setTask(t)
+			return stopResult
+		}
+		t.ContainerID = ""
 	}
 
 	result := d.Run()

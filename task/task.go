@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
@@ -334,8 +335,31 @@ func (d *Docker) Run() DockerResult {
 
 	resp, err := d.Client.ContainerCreate(ctx, cco)
 	if err != nil {
-		log.Printf("Error creating container using image %s, %v\n", d.Config.Image, err)
+		log.Printf("Error creating container using image %s: %v\n", d.Config.Image, err)
 		return DockerResult{Error: err}
+	}
+
+	// i had an issue with name reservation:
+	// ContainerCreate already reserves the name in the daemon.
+	// So if a later startup or anything else fails,
+	// leaving the name reserved will break future startup attempts
+
+	// if cleanup itself fails, we retain the ID
+	// so the worker can attempt cleanup on the next pass
+	cleanup := func(runErr error) DockerResult {
+		_, removeErr := d.Client.ContainerRemove(ctx, resp.ID, client.ContainerRemoveOptions{
+			RemoveVolumes: true,
+			RemoveLinks:   false,
+			Force:         true, // forsenW
+		})
+		if removeErr != nil {
+			log.Printf("Error cleaning up container %s after startup failure: %v\n", resp.ID, removeErr)
+			return DockerResult{
+				ContainerID: resp.ID,
+				Error:       fmt.Errorf("%w (also failed to clean up container: %v)", runErr, removeErr),
+			}
+		}
+		return DockerResult{Error: runErr}
 	}
 
 	// As of now, ContainerStartResult contains no fields,
@@ -343,7 +367,7 @@ func (d *Docker) Run() DockerResult {
 	_, err = d.Client.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{})
 	if err != nil {
 		log.Printf("Error starting container %s: %v\n", resp.ID, err)
-		return DockerResult{Error: err}
+		return cleanup(err)
 	}
 
 	out, err := d.Client.ContainerLogs(
@@ -353,8 +377,14 @@ func (d *Docker) Run() DockerResult {
 	)
 	if err != nil {
 		log.Printf("Error getting logs for container %s: %v\n", resp.ID, err)
-		return DockerResult{Error: err}
+		return cleanup(err)
 	}
+	defer func() {
+		err := out.Close()
+		if err != nil {
+			log.Printf("Error closing logs for container %s: %v\n", resp.ID, err)
+		}
+	}()
 
 	_, err = stdcopy.StdCopy(os.Stdout, os.Stderr, out)
 	if err != nil {
@@ -362,7 +392,7 @@ func (d *Docker) Run() DockerResult {
 			"Error copying the stream to stdout&stderr for container %s: %v\n",
 			resp.ID, err,
 		)
-		return DockerResult{Error: err}
+		return cleanup(err)
 	}
 
 	return DockerResult{
@@ -375,24 +405,38 @@ func (d *Docker) Run() DockerResult {
 func (d *Docker) Stop(id string) DockerResult {
 	log.Printf("Attempting to stop container %v", id)
 
+	if id == "" {
+		return DockerResult{Error: errors.New("cannot stop container: container ID is empty")}
+	}
+
 	ctx := context.Background()
 
 	// As of now, ContainerStopResult contains no fields,
 	// so I don't see any reason to store it
-	_, err := d.Client.ContainerStop(ctx, id, client.ContainerStopOptions{})
-	if err != nil {
-		log.Printf("Error stopping container %s: %v\n", id, err)
-		return DockerResult{Error: err}
+	_, stopErr := d.Client.ContainerStop(ctx, id, client.ContainerStopOptions{})
+	if stopErr != nil {
+		// a container that has already exited cannot always be stopped, but it can still be removed
+		log.Printf("Error stopping container %s: %v\n", id, stopErr)
+		if errdefs.IsNotFound(stopErr) {
+			stopErr = nil
+		}
 	}
 
 	// Same thing with ContainerStartResult and ContainerStopResult
-	_, err = d.Client.ContainerRemove(ctx, id, client.ContainerRemoveOptions{
+	_, removeErr := d.Client.ContainerRemove(ctx, id, client.ContainerRemoveOptions{
 		RemoveVolumes: true,
 		RemoveLinks:   false,
-		Force:         false,
+		Force:         true,
 	})
-	if err != nil {
-		log.Printf("Error removing container %s: %v\n", id, err)
+	if removeErr != nil {
+		if errdefs.IsNotFound(removeErr) {
+			return DockerResult{Action: ActionStop, Result: ResultSuccess} // makes sense..
+		}
+		log.Printf("Error removing container %s: %v\n", id, removeErr)
+		if stopErr != nil {
+			return DockerResult{Error: fmt.Errorf("error stopping container: %w. error removing container: %v", stopErr, removeErr)}
+		}
+		return DockerResult{Error: removeErr}
 	}
 
 	return DockerResult{Action: ActionStop, Result: ResultSuccess, Error: nil}
