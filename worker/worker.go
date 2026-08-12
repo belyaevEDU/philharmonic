@@ -186,6 +186,29 @@ func (w *Worker) InspectTask(t task.Task) task.DockerInspectResponse {
 	return d.Inspect(t.ContainerID)
 }
 
+func healthCheckFailureReason(health *container.Health) string {
+	if health != nil && len(health.Log) > 0 {
+		last := health.Log[len(health.Log)-1]
+		if last != nil {
+			output := strings.TrimSpace(last.Output)
+			if output != "" {
+				return fmt.Sprintf("docker healthcheck failed with exit code %d: %s", last.ExitCode, output)
+			}
+
+			return fmt.Sprintf("docker healthcheck failed with exit code %d", last.ExitCode)
+		}
+	}
+
+	if health != nil {
+		return fmt.Sprintf(
+			"container reported unhealthy by the docker health check (failing streak: %d)",
+			health.FailingStreak,
+		)
+	}
+
+	return "container reported unhealthy by the docker health check"
+}
+
 func (w *Worker) updateTasks() {
 	for id, t := range w.Db {
 		if t.State == task.Running {
