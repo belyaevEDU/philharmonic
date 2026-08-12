@@ -37,6 +37,7 @@ type Manager struct {
 	TaskWorkerMap map[uuid.UUID]string
 	LastWorker    int
 	mu            sync.RWMutex
+	pendingMu     sync.Mutex
 	checkers      map[uuid.UUID]context.CancelFunc
 }
 
@@ -77,18 +78,62 @@ func (m *Manager) SelectWorker() string {
 }
 
 func (m *Manager) AddTask(te task.TaskEvent) {
+	m.pendingMu.Lock()
 	m.Pending.Enqueue(te)
+	m.pendingMu.Unlock()
 }
 
-func (m *Manager) getTasks() []*task.Task {
+func (m *Manager) pendingLen() int {
+	m.pendingMu.Lock()
+	defer m.pendingMu.Unlock()
+	return m.Pending.Len()
+}
+
+func (m *Manager) dequeuePending() (task.TaskEvent, bool) {
+	m.pendingMu.Lock()
+	defer m.pendingMu.Unlock()
+
+	e := m.Pending.Dequeue()
+	te, ok := e.(task.TaskEvent)
+	if !ok {
+		return task.TaskEvent{}, false
+	}
+	return te, true
+}
+
+func (m *Manager) enqueuePending(te task.TaskEvent) {
+	m.pendingMu.Lock()
+	m.Pending.Enqueue(te)
+	m.pendingMu.Unlock()
+}
+
+// all snapshots now to not worry about race conditions
+func (m *Manager) getTasks() []task.Task {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	tasks := slices.Collect(maps.Values(m.TaskDb))
-	if tasks == nil {
-		return []*task.Task{}
-	}
 
+	tasks := make([]task.Task, 0, len(m.TaskDb))
+	for _, persisted := range m.TaskDb {
+		tasks = append(tasks, *persisted)
+	}
 	return tasks
+}
+
+func (m *Manager) getTask(id uuid.UUID) (task.Task, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	persisted, ok := m.TaskDb[id]
+	if !ok {
+		return task.Task{}, false
+	}
+	return *persisted, true
+}
+
+func (m *Manager) taskWorker(id uuid.UUID) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.TaskWorkerMap[id]
 }
 
 func (m *Manager) SendWork() {
