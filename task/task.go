@@ -1,6 +1,7 @@
 package task
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"slices"
 	"strconv"
 	"time"
 
@@ -44,8 +46,8 @@ type Task struct {
 	Disk          int64
 	Ports         []PortMapping
 	RestartPolicy string
-	HostPorts     network.PortMap
-	HealthCheck   string // url
+	HostPorts     []PortMapping // resolved bindings reported by the daemon
+	HealthCheck   string        // url
 	RestartCount  int
 	StartTime     time.Time
 	FinishTime    time.Time
@@ -124,6 +126,33 @@ func (c *Config) dockerPorts() (network.PortSet, network.PortMap, error) {
 	}
 
 	return exposed, bindings, nil
+}
+
+func PortMappingsFromPortMap(ports network.PortMap) []PortMapping {
+	var out []PortMapping
+
+	for p, bindings := range ports {
+		for _, b := range bindings {
+			hostPort, err := strconv.Atoi(b.HostPort)
+			if err != nil {
+				continue
+			}
+
+			out = append(out, PortMapping{
+				ContainerPort: int(p.Num()),
+				HostPort:      hostPort,
+				Protocol:      p.Proto(),
+			})
+		}
+	}
+
+	// just for the api to be deterministic
+	// because go maps' iteration order is basically randomized
+	slices.SortFunc(out, func(a, b PortMapping) int {
+		return cmp.Or(cmp.Compare(a.ContainerPort, b.ContainerPort), cmp.Compare(a.HostPort, b.HostPort))
+	})
+
+	return out
 }
 
 type Docker struct {
