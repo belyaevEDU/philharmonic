@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,6 +27,12 @@ const (
 	ResultSuccess Result = "success"
 )
 
+type PortMapping struct {
+	ContainerPort int
+	HostPort      int
+	Protocol      network.IPProtocol
+}
+
 type Task struct {
 	ID            uuid.UUID
 	ContainerID   string
@@ -35,8 +42,7 @@ type Task struct {
 	Cpu           float64
 	Memory        int64
 	Disk          int64
-	ExposedPorts  network.PortSet
-	PortBindings  map[string]string
+	Ports         []PortMapping
 	RestartPolicy string
 	HostPorts     network.PortMap
 	HealthCheck   string // url
@@ -57,7 +63,7 @@ type Config struct {
 	AttachStdin   bool
 	AttachStdout  bool
 	AttachStderr  bool
-	ExposedPorts  network.PortSet
+	Ports         []PortMapping
 	Cmd           []string
 	Image         string
 	Cpu           float64
@@ -70,13 +76,54 @@ type Config struct {
 func NewConfig(t *Task) *Config {
 	return &Config{
 		Name:          t.Name,
-		ExposedPorts:  t.ExposedPorts,
+		Ports:         t.Ports,
 		Image:         t.Image,
 		Cpu:           t.Cpu,
 		Memory:        t.Memory,
 		Disk:          t.Disk,
 		RestartPolicy: t.RestartPolicy,
 	}
+}
+
+func (c *Config) dockerPorts() (network.PortSet, network.PortMap, error) {
+	exposed := network.PortSet{}
+	bindings := network.PortMap{}
+
+	for _, pm := range c.Ports {
+		if pm.ContainerPort < 1 || pm.ContainerPort > 65535 {
+			return nil, nil, fmt.Errorf("invalid container port %d in port mapping", pm.ContainerPort)
+		}
+		if pm.HostPort < 0 || pm.HostPort > 65535 {
+			return nil, nil, fmt.Errorf("invalid host port %d in port mapping", pm.HostPort)
+		}
+
+		proto := network.TCP
+		if pm.Protocol != "" {
+			proto = pm.Protocol
+		}
+
+		if proto != network.TCP && proto != network.UDP && proto != network.SCTP {
+			return nil, nil, fmt.Errorf(
+				"invalid protocol %q in port mapping (want tcp, udp or sctp)", pm.Protocol,
+			)
+		}
+
+		port, ok := network.PortFrom(uint16(pm.ContainerPort), proto)
+		if !ok {
+			return nil, nil, fmt.Errorf("invalid port mapping %d/%s", pm.ContainerPort, proto)
+		}
+
+		exposed[port] = struct{}{}
+
+		hostPort := ""
+		if pm.HostPort != 0 {
+			hostPort = strconv.Itoa(pm.HostPort)
+		}
+
+		bindings[port] = []network.PortBinding{{HostPort: hostPort}}
+	}
+
+	return exposed, bindings, nil
 }
 
 type Docker struct {
@@ -156,17 +203,23 @@ func (d *Docker) Run() DockerResult {
 		NanoCPUs: int64(d.Config.Cpu * math.Pow(10, 9)),
 	}
 
+	exposed, bindings, err := d.Config.dockerPorts()
+	if err != nil {
+		log.Printf("Error building port config for image %s: %v\n", d.Config.Image, err)
+		return DockerResult{Error: err}
+	}
+
 	cc := container.Config{
 		Image:        d.Config.Image,
 		Tty:          false,
 		Env:          d.Config.Env,
-		ExposedPorts: d.Config.ExposedPorts,
+		ExposedPorts: exposed,
 	}
 
 	hc := container.HostConfig{
-		RestartPolicy:   rp,
-		Resources:       r,
-		PublishAllPorts: true, // might want to redo that later
+		RestartPolicy: rp,
+		Resources:     r,
+		PortBindings:  bindings,
 	}
 
 	// requires either Image or Config.Image to be set, not both
