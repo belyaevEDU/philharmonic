@@ -89,6 +89,11 @@ func (w *Worker) StartTask(t task.Task) task.DockerResult {
 		return task.DockerResult{Error: err}
 	}
 
+	if t.ContainerID != "" {
+		log.Printf("Removing container %s of task %s before (re)starting it\n", t.ContainerID, t.ID)
+		d.Stop(t.ContainerID)
+	}
+
 	result := d.Run()
 	if result.Error != nil {
 		log.Printf("Error running task %v: %v\n", t.ID, result.Error)
