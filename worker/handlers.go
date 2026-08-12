@@ -60,14 +60,14 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	taskToStop, exists := a.Worker.Db[tID]
+	taskToStop, exists := a.Worker.getTask(tID)
 	if !exists {
 		log.Printf("No task with ID %v found\n", tID)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
-	taskCopy := *taskToStop
+	taskCopy := taskToStop
 	taskCopy.State = task.Completed
 	a.Worker.AddTask(taskCopy)
 
