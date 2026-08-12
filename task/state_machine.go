@@ -15,9 +15,9 @@ const (
 var stateTransitionMap = map[State][]State{
 	Pending:   {Scheduled},
 	Scheduled: {Scheduled, Running, Failed},
-	Running:   {Running, Completed, Failed},
+	Running:   {Running, Scheduled, Completed, Failed},
 	Completed: {},
-	Failed:    {},
+	Failed:    {Scheduled, Completed},
 }
 
 func ValidStateTransition(from, to State) bool {

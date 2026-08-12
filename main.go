@@ -37,6 +37,7 @@ func main() {
 
 	go w.RunTasks()
 	go w.CollectStats()
+	go w.UpdateTasks()
 	go func() {
 		err = api.Start()
 		if err != nil {
@@ -55,6 +56,7 @@ func main() {
 
 	go m.ProcessTasks()
 	go m.UpdateTasks()
+	go m.DoHealthChecks()
 	err = mapi.Start()
 	if err != nil {
 		fmt.Printf("Error raised when starting the http server: %v", err)

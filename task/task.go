@@ -1,14 +1,19 @@
 package task
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math"
 	"os"
+	"slices"
+	"strconv"
 	"time"
 
+	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
@@ -25,6 +30,56 @@ const (
 	ResultSuccess Result = "success"
 )
 
+type PortMapping struct {
+	ContainerPort int
+	HostPort      int
+	Protocol      network.IPProtocol
+}
+
+type HealthCheckType string
+
+const (
+	HealthCheckHTTP HealthCheckType = "http"
+	HealthCheckTCP  HealthCheckType = "tcp"
+	HealthCheckExec HealthCheckType = "exec"
+
+	HealthCheckDefaultInterval    = 30
+	HealthCheckDefaultTimeout     = 5
+	HealthCheckDefaultRetries     = 3
+	HealthCheckDefaultStartPeriod = 0
+)
+
+type HealthCheck struct {
+	Type        HealthCheckType
+	Port        int
+	Path        string
+	Command     []string
+	Interval    int
+	Timeout     int
+	Retries     int
+	StartPeriod int
+}
+
+func (h *HealthCheck) Normalized() HealthCheck {
+	n := HealthCheck{}
+	if h != nil {
+		n = *h
+	}
+	if n.Interval <= 0 {
+		n.Interval = HealthCheckDefaultInterval
+	}
+	if n.Timeout <= 0 {
+		n.Timeout = HealthCheckDefaultTimeout
+	}
+	if n.Retries <= 0 {
+		n.Retries = HealthCheckDefaultRetries
+	}
+	if n.StartPeriod < 0 {
+		n.StartPeriod = HealthCheckDefaultStartPeriod
+	}
+	return n
+}
+
 type Task struct {
 	ID            uuid.UUID
 	ContainerID   string
@@ -34,9 +89,12 @@ type Task struct {
 	Cpu           float64
 	Memory        int64
 	Disk          int64
-	ExposedPorts  network.PortSet
-	PortBindings  map[string]string
+	Ports         []PortMapping
 	RestartPolicy string
+	HostPorts     []PortMapping // resolved bindings reported by the daemon
+	HealthCheck   *HealthCheck
+	RestartCount  int
+	FailureReason string `json:",omitempty"`
 	StartTime     time.Time
 	FinishTime    time.Time
 }
@@ -53,7 +111,7 @@ type Config struct {
 	AttachStdin   bool
 	AttachStdout  bool
 	AttachStderr  bool
-	ExposedPorts  network.PortSet
+	Ports         []PortMapping
 	Cmd           []string
 	Image         string
 	Cpu           float64
@@ -61,23 +119,144 @@ type Config struct {
 	Disk          int64
 	Env           []string
 	RestartPolicy string
+	HealthCheck   *HealthCheck
 }
 
 func NewConfig(t *Task) *Config {
 	return &Config{
 		Name:          t.Name,
-		ExposedPorts:  t.ExposedPorts,
+		Ports:         t.Ports,
 		Image:         t.Image,
 		Cpu:           t.Cpu,
 		Memory:        t.Memory,
 		Disk:          t.Disk,
 		RestartPolicy: t.RestartPolicy,
+		HealthCheck:   t.HealthCheck,
+	}
+}
+
+func (c *Config) dockerPorts() (network.PortSet, network.PortMap, error) {
+	exposed := network.PortSet{}
+	bindings := network.PortMap{}
+
+	for _, pm := range c.Ports {
+		if pm.ContainerPort < 1 || pm.ContainerPort > 65535 {
+			return nil, nil, fmt.Errorf("invalid container port %d in port mapping", pm.ContainerPort)
+		}
+		if pm.HostPort < 0 || pm.HostPort > 65535 {
+			return nil, nil, fmt.Errorf("invalid host port %d in port mapping", pm.HostPort)
+		}
+
+		proto := network.TCP
+		if pm.Protocol != "" {
+			proto = pm.Protocol
+		}
+
+		if proto != network.TCP && proto != network.UDP && proto != network.SCTP {
+			return nil, nil, fmt.Errorf(
+				"invalid protocol %s in port mapping (want tcp, udp or sctp)", pm.Protocol,
+			)
+		}
+
+		port, ok := network.PortFrom(uint16(pm.ContainerPort), proto)
+		if !ok {
+			return nil, nil, fmt.Errorf("invalid port mapping %d/%s", pm.ContainerPort, proto)
+		}
+
+		exposed[port] = struct{}{}
+
+		hostPort := ""
+		if pm.HostPort != 0 {
+			hostPort = strconv.Itoa(pm.HostPort)
+		}
+
+		bindings[port] = []network.PortBinding{{HostPort: hostPort}}
+	}
+
+	return exposed, bindings, nil
+}
+
+func PortMappingsFromPortMap(ports network.PortMap) []PortMapping {
+	var out []PortMapping
+
+	for p, bindings := range ports {
+		for _, b := range bindings {
+			hostPort, err := strconv.Atoi(b.HostPort)
+			if err != nil {
+				continue
+			}
+
+			out = append(out, PortMapping{
+				ContainerPort: int(p.Num()),
+				HostPort:      hostPort,
+				Protocol:      p.Proto(),
+			})
+		}
+	}
+
+	// just for the api to be deterministic
+	// because go maps' iteration order is basically randomized
+	slices.SortFunc(out, func(a, b PortMapping) int {
+		return cmp.Or(
+			cmp.Compare(a.ContainerPort, b.ContainerPort),
+			cmp.Compare(a.HostPort, b.HostPort),
+			cmp.Compare(a.Protocol, b.Protocol),
+		)
+	})
+
+	// the daemon reports both IPv4 and IPv6 for every binding, so
+	out = slices.CompactFunc(out, func(a, b PortMapping) bool {
+		return a == b
+	})
+
+	return out
+}
+
+// "exec" probes are managed by Docker, "http"/"tcp" are done by the manager
+func (c *Config) dockerHealthcheck() *container.HealthConfig {
+	hc := c.HealthCheck
+	if hc == nil || hc.Type != HealthCheckExec || len(hc.Command) == 0 {
+		return nil
+	}
+
+	n := hc.Normalized()
+	return &container.HealthConfig{
+		Test:        append([]string{"CMD"}, n.Command...),
+		Interval:    time.Duration(n.Interval) * time.Second,
+		Timeout:     time.Duration(n.Timeout) * time.Second,
+		StartPeriod: time.Duration(n.StartPeriod) * time.Second,
+		Retries:     n.Retries,
 	}
 }
 
 type Docker struct {
 	Client *client.Client
 	Config Config
+}
+
+type DockerInspectResponse struct {
+	Response *container.InspectResponse
+	Error    error
+}
+
+func (d *Docker) Inspect(containerID string) DockerInspectResponse {
+	if d.Client == nil {
+		return DockerInspectResponse{
+			Error: errors.New("error inspecting a container: Docker.Client is nil"),
+		}
+	}
+
+	ctx := context.Background()
+
+	// Size controls whether the container's filesystem size should be calculated
+	cio := client.ContainerInspectOptions{Size: true}
+	resp, err := d.Client.ContainerInspect(ctx, containerID, cio)
+	if err != nil {
+		log.Printf("Error inspecting container: %v\n", err)
+		return DockerInspectResponse{Error: err}
+	}
+
+	return DockerInspectResponse{Response: &resp.Container}
 }
 
 func NewDocker(c *Config) (*Docker, error) {
@@ -127,17 +306,24 @@ func (d *Docker) Run() DockerResult {
 		NanoCPUs: int64(d.Config.Cpu * math.Pow(10, 9)),
 	}
 
+	exposed, bindings, err := d.Config.dockerPorts()
+	if err != nil {
+		log.Printf("Error building port config for image %s: %v\n", d.Config.Image, err)
+		return DockerResult{Error: err}
+	}
+
 	cc := container.Config{
 		Image:        d.Config.Image,
 		Tty:          false,
 		Env:          d.Config.Env,
-		ExposedPorts: d.Config.ExposedPorts,
+		ExposedPorts: exposed,
+		Healthcheck:  d.Config.dockerHealthcheck(),
 	}
 
 	hc := container.HostConfig{
-		RestartPolicy:   rp,
-		Resources:       r,
-		PublishAllPorts: true, // might want to redo that later
+		RestartPolicy: rp,
+		Resources:     r,
+		PortBindings:  bindings,
 	}
 
 	// requires either Image or Config.Image to be set, not both
@@ -149,8 +335,31 @@ func (d *Docker) Run() DockerResult {
 
 	resp, err := d.Client.ContainerCreate(ctx, cco)
 	if err != nil {
-		log.Printf("Error creating container using image %s, %v\n", d.Config.Image, err)
+		log.Printf("Error creating container using image %s: %v\n", d.Config.Image, err)
 		return DockerResult{Error: err}
+	}
+
+	// i had an issue with name reservation:
+	// ContainerCreate already reserves the name in the daemon.
+	// So if a later startup or anything else fails,
+	// leaving the name reserved will break future startup attempts
+
+	// if cleanup itself fails, we retain the ID
+	// so the worker can attempt cleanup on the next pass
+	cleanup := func(runErr error) DockerResult {
+		_, removeErr := d.Client.ContainerRemove(ctx, resp.ID, client.ContainerRemoveOptions{
+			RemoveVolumes: true,
+			RemoveLinks:   false,
+			Force:         true, // forsenW
+		})
+		if removeErr != nil {
+			log.Printf("Error cleaning up container %s after startup failure: %v\n", resp.ID, removeErr)
+			return DockerResult{
+				ContainerID: resp.ID,
+				Error:       fmt.Errorf("%w (also failed to clean up container: %v)", runErr, removeErr),
+			}
+		}
+		return DockerResult{Error: runErr}
 	}
 
 	// As of now, ContainerStartResult contains no fields,
@@ -158,7 +367,7 @@ func (d *Docker) Run() DockerResult {
 	_, err = d.Client.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{})
 	if err != nil {
 		log.Printf("Error starting container %s: %v\n", resp.ID, err)
-		return DockerResult{Error: err}
+		return cleanup(err)
 	}
 
 	out, err := d.Client.ContainerLogs(
@@ -168,8 +377,14 @@ func (d *Docker) Run() DockerResult {
 	)
 	if err != nil {
 		log.Printf("Error getting logs for container %s: %v\n", resp.ID, err)
-		return DockerResult{Error: err}
+		return cleanup(err)
 	}
+	defer func() {
+		err := out.Close()
+		if err != nil {
+			log.Printf("Error closing logs for container %s: %v\n", resp.ID, err)
+		}
+	}()
 
 	_, err = stdcopy.StdCopy(os.Stdout, os.Stderr, out)
 	if err != nil {
@@ -177,7 +392,7 @@ func (d *Docker) Run() DockerResult {
 			"Error copying the stream to stdout&stderr for container %s: %v\n",
 			resp.ID, err,
 		)
-		return DockerResult{Error: err}
+		return cleanup(err)
 	}
 
 	return DockerResult{
@@ -190,24 +405,38 @@ func (d *Docker) Run() DockerResult {
 func (d *Docker) Stop(id string) DockerResult {
 	log.Printf("Attempting to stop container %v", id)
 
+	if id == "" {
+		return DockerResult{Error: errors.New("cannot stop container: container ID is empty")}
+	}
+
 	ctx := context.Background()
 
 	// As of now, ContainerStopResult contains no fields,
 	// so I don't see any reason to store it
-	_, err := d.Client.ContainerStop(ctx, id, client.ContainerStopOptions{})
-	if err != nil {
-		log.Printf("Error stopping container %s: %v\n", id, err)
-		return DockerResult{Error: err}
+	_, stopErr := d.Client.ContainerStop(ctx, id, client.ContainerStopOptions{})
+	if stopErr != nil {
+		// a container that has already exited cannot always be stopped, but it can still be removed
+		log.Printf("Error stopping container %s: %v\n", id, stopErr)
+		if errdefs.IsNotFound(stopErr) {
+			stopErr = nil
+		}
 	}
 
 	// Same thing with ContainerStartResult and ContainerStopResult
-	_, err = d.Client.ContainerRemove(ctx, id, client.ContainerRemoveOptions{
+	_, removeErr := d.Client.ContainerRemove(ctx, id, client.ContainerRemoveOptions{
 		RemoveVolumes: true,
 		RemoveLinks:   false,
-		Force:         false,
+		Force:         true,
 	})
-	if err != nil {
-		log.Printf("Error removing container %s: %v\n", id, err)
+	if removeErr != nil {
+		if errdefs.IsNotFound(removeErr) {
+			return DockerResult{Action: ActionStop, Result: ResultSuccess} // makes sense..
+		}
+		log.Printf("Error removing container %s: %v\n", id, removeErr)
+		if stopErr != nil {
+			return DockerResult{Error: fmt.Errorf("error stopping container: %w. error removing container: %v", stopErr, removeErr)}
+		}
+		return DockerResult{Error: removeErr}
 	}
 
 	return DockerResult{Action: ActionStop, Result: ResultSuccess, Error: nil}
