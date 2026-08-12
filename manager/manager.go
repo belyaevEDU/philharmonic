@@ -183,6 +183,7 @@ func (m *Manager) updateTasks() {
 			m.TaskDb[t.ID].StartTime = t.StartTime
 			m.TaskDb[t.ID].FinishTime = t.FinishTime
 			m.TaskDb[t.ID].ContainerID = t.ContainerID
+			m.TaskDb[t.ID].HostPorts = t.HostPorts
 		}
 	}
 }
@@ -232,7 +233,7 @@ func (m *Manager) restartTask(t *task.Task) {
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
 		log.Printf("Error connecting to %v: %v", w, err)
-		m.Pending.Enqueue(t)
+		m.Pending.Enqueue(te)
 		return
 	}
 
@@ -272,6 +273,12 @@ func (m *Manager) checkTaskHealth(t task.Task) error {
 	}
 
 	hostPort := getHostPort(t.HostPorts)
+	if hostPort == nil {
+		msg := fmt.Sprintf("task %s has no published host ports to health check", t.ID)
+		log.Println(msg)
+		return errors.New(msg)
+	}
+
 	worker := strings.Split(w, ":")
 	url := fmt.Sprintf("http://%s:%s%s", worker[0], *hostPort, t.HealthCheck)
 
@@ -297,7 +304,7 @@ func (m *Manager) checkTaskHealth(t task.Task) error {
 
 func (m *Manager) doHealthChecks() {
 	for _, t := range m.getTasks() {
-		if t.State == task.Running && t.RestartCount < HealthCheckFailCap {
+		if t.State == task.Running && t.HealthCheck != "" && t.RestartCount < HealthCheckFailCap {
 			err := m.checkTaskHealth(*t)
 			// i'd nuke the log.printlns for every error out of there and log it here
 			if err != nil {
@@ -322,7 +329,9 @@ func (m *Manager) ProcessTasks() {
 
 func getHostPort(ports network.PortMap) *string {
 	for k := range ports {
-		return &ports[k][0].HostPort // atrocious
+		if len(ports[k]) > 0 {
+			return &ports[k][0].HostPort // atrocious, dies in the health check rework
+		}
 	}
 	return nil
 }
