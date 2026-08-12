@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"maps"
-	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/belyaevedu/philharmonic/task"
@@ -20,23 +20,61 @@ type Worker struct {
 	Db        map[uuid.UUID]*task.Task
 	Stats     *Stats
 	TaskCount int
+
+	dbMu    sync.RWMutex
+	queueMu sync.Mutex
 }
 
 func (w *Worker) getTasks() []*task.Task {
-	tasks := slices.Collect(maps.Values(w.Db))
-	if tasks == nil {
-		return []*task.Task{}
+	w.dbMu.RLock()
+	defer w.dbMu.RUnlock()
+
+	tasks := make([]*task.Task, 0, len(w.Db))
+	for _, persisted := range w.Db {
+		copy := *persisted
+		tasks = append(tasks, &copy)
 	}
 	return tasks
 }
 
+func (w *Worker) getTask(id uuid.UUID) (task.Task, bool) {
+	w.dbMu.RLock()
+	defer w.dbMu.RUnlock()
+
+	persisted, ok := w.Db[id]
+	if !ok {
+		return task.Task{}, false
+	}
+	return *persisted, true
+}
+
+func (w *Worker) setTask(t task.Task) {
+	w.dbMu.Lock()
+	w.Db[t.ID] = &t
+	w.dbMu.Unlock()
+}
+
 func (w *Worker) AddTask(t task.Task) {
+	w.queueMu.Lock()
 	w.Queue.Enqueue(t)
+	w.queueMu.Unlock()
+}
+
+func (w *Worker) queueLen() int {
+	w.queueMu.Lock()
+	defer w.queueMu.Unlock()
+	return w.Queue.Len()
+}
+
+func (w *Worker) dequeueTask() any {
+	w.queueMu.Lock()
+	defer w.queueMu.Unlock()
+	return w.Queue.Dequeue()
 }
 
 // action is picked depending on the task's state
 func (w *Worker) runTask() task.DockerResult {
-	t := w.Queue.Dequeue()
+	t := w.dequeueTask()
 	if t == nil {
 		log.Println("No tasks in the queue")
 		return task.DockerResult{Error: nil}
@@ -51,14 +89,18 @@ func (w *Worker) runTask() task.DockerResult {
 		}
 	}
 
+	w.dbMu.Lock()
 	taskPersisted := w.Db[taskQueued.ID]
 	if taskPersisted == nil {
-		taskPersisted = &taskQueued
-		w.Db[taskQueued.ID] = &taskQueued
+		persisted := taskQueued
+		taskPersisted = &persisted
+		w.Db[taskQueued.ID] = taskPersisted
 	}
+	persistedState := taskPersisted.State
+	w.dbMu.Unlock()
 
 	var result task.DockerResult
-	if task.ValidStateTransition(taskPersisted.State, taskQueued.State) {
+	if task.ValidStateTransition(persistedState, taskQueued.State) {
 		switch taskQueued.State {
 		case task.Scheduled:
 			result = w.StartTask(taskQueued)
@@ -73,7 +115,7 @@ func (w *Worker) runTask() task.DockerResult {
 	} else {
 		result.Error = fmt.Errorf(
 			"invalid transition from %v to %v for task %s",
-			taskPersisted.State, taskQueued.State, taskQueued.ID.String(),
+			persistedState, taskQueued.State, taskQueued.ID.String(),
 		)
 	}
 	return result
@@ -88,7 +130,7 @@ func (w *Worker) StartTask(t task.Task) task.DockerResult {
 	if err != nil {
 		t.State = task.Failed
 		t.FailureReason = fmt.Sprintf("could not create docker client: %v", err)
-		w.Db[t.ID] = &t
+		w.setTask(t)
 		return task.DockerResult{Error: err}
 	}
 
@@ -102,7 +144,7 @@ func (w *Worker) StartTask(t task.Task) task.DockerResult {
 		log.Printf("Error running task %v: %v\n", t.ID, result.Error)
 		t.State = task.Failed
 		t.FailureReason = fmt.Sprintf("container failed to start: %v", result.Error)
-		w.Db[t.ID] = &t
+		w.setTask(t)
 		return result
 	}
 
@@ -112,11 +154,13 @@ func (w *Worker) StartTask(t task.Task) task.DockerResult {
 	inspect := d.Inspect(result.ContainerID)
 	if inspect.Error != nil {
 		log.Printf("Error inspecting container %s after start: %v\n", result.ContainerID, inspect.Error)
+	} else if inspect.Response == nil || inspect.Response.NetworkSettings == nil {
+		log.Printf("Container %s returned no network settings after start\n", result.ContainerID)
 	} else {
 		t.HostPorts = task.PortMappingsFromPortMap(inspect.Response.NetworkSettings.Ports)
 	}
 
-	w.Db[t.ID] = &t
+	w.setTask(t)
 
 	return result
 }
@@ -136,18 +180,24 @@ func (w *Worker) StopTask(t task.Task) task.DockerResult {
 
 	t.FinishTime = time.Now().UTC()
 
-	persisted := w.Db[t.ID]
+	persisted, exists := w.getTask(t.ID)
+	if !exists {
+		msg := fmt.Sprintf("error: task with ID %s isn't in the worker db", t.ID.String())
+		fmt.Println(msg)
+		return task.DockerResult{Error: errors.New(msg)}
+	}
+
 	switch {
 	case t.FailureReason != "":
 		t.State = task.Failed
-	case persisted != nil && persisted.State == task.Failed: // worker ahead of mngr fallback
+	case persisted.State == task.Failed: // worker ahead of mngr fallback
 		t.State = task.Failed
 		t.FailureReason = persisted.FailureReason
 	default:
 		t.State = task.Completed
 	}
 
-	w.Db[t.ID] = &t
+	w.setTask(t)
 
 	log.Printf("Stopped and removed container %v for task %v\n", t.ContainerID, t.ID)
 
@@ -156,7 +206,7 @@ func (w *Worker) StopTask(t task.Task) task.DockerResult {
 
 func (w *Worker) RunTasks() {
 	for {
-		if w.Queue.Len() != 0 {
+		if w.queueLen() != 0 {
 			result := w.runTask()
 			if result.Error != nil {
 				log.Printf("Error running task: %v\n", result.Error)
