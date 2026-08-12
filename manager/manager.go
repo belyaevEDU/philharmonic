@@ -295,6 +295,47 @@ func (m *Manager) restartTask(t *task.Task) {
 	log.Printf("%#v\n", newTask)
 }
 
+func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
+	m.mu.Lock()
+	w := m.TaskWorkerMap[t.ID]
+	t.State = task.Failed
+	t.FailureReason = reason
+	t.FinishTime = time.Now().UTC()
+	m.TaskDb[t.ID] = &t
+	m.mu.Unlock()
+
+	stopTask := t
+	stopTask.State = task.Completed // will be Failed in the end since we sent over the failure reason
+	te := task.TaskEvent{
+		ID:        uuid.New(),
+		State:     task.Completed,
+		Timestamp: time.Now(),
+		Task:      stopTask,
+	}
+
+	data, err := json.Marshal(te)
+	if err != nil {
+		log.Printf("Error marshalling task object: %v\n", t)
+		return
+	}
+
+	url := fmt.Sprintf("http://%s/tasks", w)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
+	if err != nil {
+		log.Printf("Error connecting to %v: %v", w, err)
+		return
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Error closing response body: %v\n", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusCreated {
+		log.Printf("Error: worker %s responded with %d when stopping terminal task %s\n", w, resp.StatusCode, t.ID)
+	}
+}
+
 // http/tcp health checks
 func (m *Manager) checkTaskHealth(ctx context.Context, t *task.Task, w string) error {
 	hc := t.HealthCheck
