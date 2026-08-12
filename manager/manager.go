@@ -7,10 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"maps"
 	"net"
 	"net/http"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -137,12 +135,11 @@ func (m *Manager) taskWorker(id uuid.UUID) string {
 }
 
 func (m *Manager) SendWork() {
-	if m.Pending.Len() > 0 {
+	if m.pendingLen() > 0 {
 		w := m.SelectWorker()
-		e := m.Pending.Dequeue()
-		te, ok := e.(task.TaskEvent)
+		te, ok := m.dequeuePending()
 		if !ok {
-			log.Printf("A non-task.TaskEvent object somehow got in the queue: %v\n", e)
+			log.Println("A non-task.TaskEvent object somehow got in the queue")
 			return
 		}
 
@@ -168,7 +165,7 @@ func (m *Manager) SendWork() {
 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 		if err != nil {
 			fmt.Printf("Error connecting to %v: %v\n", w, err)
-			m.Pending.Enqueue(te)
+			m.enqueuePending(te)
 			return
 		}
 		defer func() {
@@ -319,7 +316,7 @@ func (m *Manager) restartTask(t task.Task) {
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
 		log.Printf("Error connecting to %v: %v", w, err)
-		m.Pending.Enqueue(te)
+		m.enqueuePending(te)
 		return
 	}
 	defer func() {
