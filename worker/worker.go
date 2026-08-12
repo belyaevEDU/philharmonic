@@ -104,6 +104,14 @@ func (w *Worker) StartTask(t task.Task) task.DockerResult {
 
 	t.ContainerID = result.ContainerID
 	t.State = task.Running
+
+	inspect := d.Inspect(result.ContainerID)
+	if inspect.Error != nil {
+		log.Printf("Error inspecting container %s after start: %v\n", result.ContainerID, inspect.Error)
+	} else {
+		t.HostPorts = task.PortMappingsFromPortMap(inspect.Response.NetworkSettings.Ports)
+	}
+
 	w.Db[t.ID] = &t
 
 	return result
@@ -184,7 +192,7 @@ func (w *Worker) updateTasks() {
 				w.Db[id].State = task.Failed
 			}
 
-			w.Db[id].HostPorts = resp.Response.NetworkSettings.Ports
+			w.Db[id].HostPorts = task.PortMappingsFromPortMap(resp.Response.NetworkSettings.Ports)
 		}
 	}
 }
