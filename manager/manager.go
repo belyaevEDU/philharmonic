@@ -398,7 +398,7 @@ func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
 }
 
 // http/tcp health checks
-func (m *Manager) checkTaskHealth(ctx context.Context, t *task.Task, w string) error {
+func (m *Manager) checkTaskHealth(ctx context.Context, t task.Task, w string) error {
 	hc := t.HealthCheck
 
 	host := strings.SplitN(w, ":", 2)[0]
@@ -514,7 +514,7 @@ func (m *Manager) restartFailedTasks() {
 	}
 }
 
-func (m *Manager) startChecker(t *task.Task) {
+func (m *Manager) startChecker(t task.Task) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.checkers[t.ID] = cancel
 	go m.runChecker(ctx, t)
@@ -527,12 +527,10 @@ func (m *Manager) stopChecker(id uuid.UUID) {
 	}
 }
 
-func (m *Manager) runChecker(ctx context.Context, t *task.Task) {
+func (m *Manager) runChecker(ctx context.Context, t task.Task) {
 	hc := t.HealthCheck.Normalized()
 
-	m.mu.RLock()
-	w := m.TaskWorkerMap[t.ID]
-	m.mu.RUnlock()
+	w := m.taskWorker(t.ID)
 	if w == "" {
 		log.Printf("Task %s is no longer assigned to a worker, stopping its checker\n", t.ID)
 		return
@@ -555,7 +553,8 @@ func (m *Manager) runChecker(ctx context.Context, t *task.Task) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if t.State != task.Running {
+			t, ok := m.getTask(t.ID)
+			if !ok || t.State != task.Running {
 				return
 			}
 
@@ -575,10 +574,9 @@ func (m *Manager) runChecker(ctx context.Context, t *task.Task) {
 			}
 
 			if t.RestartCount >= MaxRestarts {
-				log.Printf(
-					"Task %s keeps failing its health check but reached the restart cap (%d); giving up\n",
-					t.ID, MaxRestarts,
-				)
+				reason := fmt.Sprintf("health check failed after all restarts & retries. last error: %v", err)
+				log.Printf("Task %s: %s; marking failed and stopping its container\n", t.ID, reason)
+				m.stopTaskTerminal(t, reason)
 				return
 			}
 
