@@ -58,6 +58,30 @@ func (w *Worker) setTask(t task.Task) {
 }
 
 func (w *Worker) AddTask(t task.Task) {
+	// now publishing a scheduled start before putting the task in queue
+	// so that the manager can't get a Failed state from any prev. attempt
+
+	// also saving the last known container ID
+	// so StartTask can then remove that container before creating the replacement
+
+	if t.State == task.Scheduled {
+		w.dbMu.Lock()
+		if w.Db == nil {
+			w.Db = make(map[uuid.UUID]*task.Task)
+		}
+		if persisted, exists := w.Db[t.ID]; exists {
+			if t.ContainerID == "" {
+				t.ContainerID = persisted.ContainerID
+			}
+			if len(t.HostPorts) == 0 {
+				t.HostPorts = persisted.HostPorts
+			}
+		}
+		queued := t
+		w.Db[t.ID] = &queued
+		w.dbMu.Unlock()
+	}
+
 	w.queueMu.Lock()
 	w.Queue.Enqueue(t)
 	w.queueMu.Unlock()
@@ -98,6 +122,13 @@ func (w *Worker) runTask() task.DockerResult {
 		persisted := taskQueued
 		taskPersisted = &persisted
 		w.Db[taskQueued.ID] = taskPersisted
+	}
+
+	// doubling prevention.
+	// in these stages, considering the fact that manager updates task via 10 second period,
+	// we prioritize the info stored on the worker
+	if taskQueued.ContainerID == "" {
+		taskQueued.ContainerID = taskPersisted.ContainerID
 	}
 	persistedState := taskPersisted.State
 	w.dbMu.Unlock()
@@ -145,6 +176,9 @@ func (w *Worker) StartTask(t task.Task) task.DockerResult {
 	result := d.Run()
 	if result.Error != nil {
 		log.Printf("Error running task %v: %v\n", t.ID, result.Error)
+		if result.ContainerID != "" {
+			t.ContainerID = result.ContainerID
+		}
 		t.State = task.Failed
 		t.FailureReason = fmt.Sprintf("container failed to start: %v", result.Error)
 		w.setTask(t)
@@ -202,7 +236,11 @@ func (w *Worker) StopTask(t task.Task) task.DockerResult {
 
 	w.setTask(t)
 
-	log.Printf("Stopped and removed container %v for task %v\n", t.ContainerID, t.ID)
+	if result.Error == nil {
+		log.Printf("Stopped and removed container %v for task %v\n", t.ContainerID, t.ID)
+	} else {
+		log.Printf("Could not stop and remove container %v for task %v\n", t.ContainerID, t.ID)
+	}
 
 	return result
 }
