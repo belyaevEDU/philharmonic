@@ -152,7 +152,7 @@ func (c *Config) dockerPorts() (network.PortSet, network.PortMap, error) {
 
 		if proto != network.TCP && proto != network.UDP && proto != network.SCTP {
 			return nil, nil, fmt.Errorf(
-				"invalid protocol %q in port mapping (want tcp, udp or sctp)", pm.Protocol,
+				"invalid protocol %s in port mapping (want tcp, udp or sctp)", pm.Protocol,
 			)
 		}
 
