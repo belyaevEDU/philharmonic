@@ -259,12 +259,11 @@ func (m *Manager) updateTasks() {
 				if t.FailureReason != "" {
 					persisted.FailureReason = t.FailureReason
 				}
-			} else if !(persisted.State == task.Failed && !persisted.FinishTime.IsZero()) {
+			} else if persisted.State != task.Failed || persisted.FinishTime.IsZero() {
 				// not terminal-failed -> trust the worker's state
 				persisted.State = t.State
 			}
-			// else: terminal-failed here; don't let a stale worker report
-			// (still Running before it processed the stop) resurrect it
+			// else: terminal-failed here
 
 			m.mu.Unlock()
 		}
