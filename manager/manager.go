@@ -162,15 +162,24 @@ func (m *Manager) SendWork() {
 		}
 
 		t := te.Task
+		isStop := te.State == task.Completed || t.State == task.Completed
+		if !isStop {
+			t.State = task.Scheduled
+			te.Task = t
+			te.State = task.Scheduled
+			if te.Timestamp.IsZero() {
+				te.Timestamp = time.Now().UTC()
+			}
+		}
 		log.Printf("Pulled %v off pending queue\n", t)
 
 		m.mu.Lock()
 		m.EventDb[te.ID] = &te
-		m.WorkerTaskMap[w] = append(m.WorkerTaskMap[w], t.ID)
-		m.TaskWorkerMap[t.ID] = w
-
-		t.State = task.Scheduled
-		m.TaskDb[t.ID] = &t
+		if !isStop {
+			m.WorkerTaskMap[w] = append(m.WorkerTaskMap[w], t.ID)
+			m.TaskWorkerMap[t.ID] = w
+			m.TaskDb[t.ID] = &t
+		}
 		m.mu.Unlock()
 
 		data, err := json.Marshal(te)
@@ -265,9 +274,22 @@ func (m *Manager) updateTasks() {
 				continue
 			}
 
+			// a worker can still be returning a snapshot from the previous restart attempt
+			// while the manager has already queued the next one
+			if t.RestartCount != persisted.RestartCount {
+				log.Printf(
+					"Ignoring stale update for task %s: worker restart count %d, manager restart count %d\n",
+					t.ID, t.RestartCount, persisted.RestartCount,
+				)
+				m.mu.Unlock()
+				continue
+			}
+
 			persisted.ContainerID = t.ContainerID
 			persisted.HostPorts = t.HostPorts
-			persisted.StartTime = t.StartTime
+			if !t.StartTime.IsZero() {
+				persisted.StartTime = t.StartTime
+			}
 			if !t.FinishTime.IsZero() {
 				persisted.FinishTime = t.FinishTime
 			}
@@ -313,14 +335,15 @@ func (m *Manager) restartTask(t task.Task) {
 	t.State = task.Scheduled
 	t.RestartCount++
 	t.FailureReason = ""
+	t.StartTime = time.Time{}
 	t.FinishTime = time.Time{}
 	m.TaskDb[t.ID] = &t
 	m.mu.Unlock()
 
 	te := task.TaskEvent{
 		ID:        uuid.New(),
-		State:     task.Running,
-		Timestamp: time.Now(),
+		State:     task.Scheduled,
+		Timestamp: time.Now().UTC(),
 		Task:      t,
 	}
 
