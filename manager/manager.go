@@ -2,14 +2,17 @@ package manager
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"io"
 	"log"
 	"maps"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/belyaevedu/philharmonic/handlers"
@@ -22,7 +25,7 @@ import (
 const (
 	WorkerTasksURL = "http://%s/tasks"
 
-	HealthCheckFailCap = 3
+	MaxRestarts = 3
 )
 
 type Manager struct {
@@ -33,6 +36,8 @@ type Manager struct {
 	WorkerTaskMap map[string][]uuid.UUID
 	TaskWorkerMap map[uuid.UUID]string
 	LastWorker    int
+	mu            sync.RWMutex
+	checkers      map[uuid.UUID]context.CancelFunc
 }
 
 func New(workers []string) *Manager {
@@ -52,6 +57,7 @@ func New(workers []string) *Manager {
 		EventDb:       eventDb,
 		WorkerTaskMap: workerTaskMap,
 		TaskWorkerMap: taskWorkerMap,
+		checkers:      make(map[uuid.UUID]context.CancelFunc),
 	}
 }
 
@@ -263,56 +269,170 @@ func (m *Manager) restartTask(t *task.Task) {
 	log.Printf("%#v\n", newTask)
 }
 
-func (m *Manager) checkTaskHealth(t task.Task) error {
-	log.Printf("Calling health check for task %s: %s\n", t.ID, t.HealthCheck)
+// http/tcp health checks
+func (m *Manager) checkTaskHealth(ctx context.Context, t *task.Task, w string) error {
+	hc := t.HealthCheck
 
-	w, ok := m.TaskWorkerMap[t.ID]
-	if !ok {
-		return errors.New("error raised checking task health: task not in TaskWorkerMap")
-	}
-
-	hostPort := getHostPort(t.HostPorts)
+	host := strings.SplitN(w, ":", 2)[0]
+	hostPort := hostPortFor(t.HostPorts, hc.Port)
 	if hostPort == 0 {
-		msg := fmt.Sprintf("task %s has no published host ports to health check", t.ID)
-		log.Println(msg)
-		return errors.New(msg)
+		return fmt.Errorf("error: task %s has no published host port for container port %d", t.ID, hc.Port)
 	}
 
-	worker := strings.Split(w, ":")
-	url := fmt.Sprintf("http://%s:%d%s", worker[0], hostPort, t.HealthCheck)
+	switch hc.Type {
+	case task.HealthCheckHTTP:
+		path := hc.Path
+		if path == "" {
+			path = "/"
+		}
+		url := fmt.Sprintf("http://%s:%d%s", host, hostPort, path)
 
-	log.Printf("Calling health check for task %s: %s\n", t.ID, url)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return fmt.Errorf("error building request: %w", err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("error performing health check %s: %w", url, err)
+		}
+		defer resp.Body.Close()
 
-	resp, err := http.Get(url) // #nosec G107
-	if err != nil {
-		msg := fmt.Sprintf("error connecting to health check %s", url)
-		log.Println(msg)
-		return errors.New(msg)
+		_, err = io.Copy(io.Discard, resp.Body)
+		if err != nil {
+			return fmt.Errorf("error copying to discard somehow?: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("health check %s returned %d", url, resp.StatusCode)
+		}
+		return nil
+
+	case task.HealthCheckTCP:
+		addr := fmt.Sprintf("%s:%d", host, hostPort)
+
+		var d net.Dialer
+		conn, err := d.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return fmt.Errorf("tcp health check %s: %w", addr, err)
+		}
+
+		err = conn.Close()
+		if err != nil {
+			return fmt.Errorf("error closing tcp health check: %w", err)
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("unsupported manager-driven health check type %s", hc.Type)
 	}
-
-	if resp.StatusCode != http.StatusOK {
-		msg := fmt.Sprintf("error: health check for task %s did not return 200", t.ID)
-		log.Println(msg)
-		return errors.New(msg)
-	}
-
-	log.Printf("Task %s health check response: %v\n", t.ID, resp.StatusCode)
-
-	return nil
 }
 
-func (m *Manager) doHealthChecks() {
+func (m *Manager) reconcileCheckers() {
+	seen := make(map[uuid.UUID]struct{})
+
 	for _, t := range m.getTasks() {
-		if t.State == task.Running && t.HealthCheck != "" && t.RestartCount < HealthCheckFailCap {
-			err := m.checkTaskHealth(*t)
-			// i'd nuke the log.printlns for every error out of there and log it here
-			if err != nil {
-				if t.RestartCount < HealthCheckFailCap {
-					m.restartTask(t)
-				}
-			}
-		} else if t.State == task.Failed && t.RestartCount < HealthCheckFailCap {
+		seen[t.ID] = struct{}{}
+
+		// only http/tcp health checks are managed by the manager
+		managed := t.State == task.Running && t.HealthCheck != nil &&
+			(t.HealthCheck.Type == task.HealthCheckHTTP || t.HealthCheck.Type == task.HealthCheckTCP)
+		if !managed {
+			m.stopChecker(t.ID)
+			continue
+		}
+
+		if _, running := m.checkers[t.ID]; !running {
+			m.startChecker(t)
+			log.Printf("Started %s health checker for task %s\n", t.HealthCheck.Type, t.ID)
+		}
+	}
+
+	for id := range m.checkers {
+		if _, ok := seen[id]; !ok {
+			m.stopChecker(id)
+		}
+	}
+}
+
+func (m *Manager) restartFailedTasks() {
+	for _, t := range m.getTasks() {
+		if t.State == task.Failed && t.RestartCount < MaxRestarts {
 			m.restartTask(t)
+		}
+	}
+}
+
+func (m *Manager) startChecker(t *task.Task) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.checkers[t.ID] = cancel
+	go m.runChecker(ctx, t)
+}
+
+func (m *Manager) stopChecker(id uuid.UUID) {
+	if cancel, ok := m.checkers[id]; ok {
+		cancel()
+		delete(m.checkers, id)
+	}
+}
+
+func (m *Manager) runChecker(ctx context.Context, t *task.Task) {
+	hc := t.HealthCheck.Normalized()
+
+	m.mu.RLock()
+	w := m.TaskWorkerMap[t.ID]
+	m.mu.RUnlock()
+	if w == "" {
+		log.Printf("Task %s is no longer assigned to a worker, stopping its checker\n", t.ID)
+		return
+	}
+
+	if hc.StartPeriod > 0 {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Duration(hc.StartPeriod) * time.Second):
+		}
+	}
+
+	ticker := time.NewTicker(time.Duration(hc.Interval) * time.Second)
+	defer ticker.Stop()
+
+	failures := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if t.State != task.Running {
+				return
+			}
+
+			ctxTimeout, cancel := context.WithTimeout(ctx, time.Duration(hc.Timeout)*time.Second)
+			err := m.checkTaskHealth(ctxTimeout, t, w)
+			cancel() // normally i'd defer but this is in a constant for loop
+
+			if err == nil {
+				failures = 0
+				continue
+			}
+
+			failures++
+			log.Printf("Health check for task %s failed (%d/%d): %v\n", t.ID, failures, hc.Retries, err)
+			if failures < hc.Retries {
+				continue
+			}
+
+			if t.RestartCount >= MaxRestarts {
+				log.Printf(
+					"Task %s keeps failing its health check but reached the restart cap (%d); giving up\n",
+					t.ID, MaxRestarts,
+				)
+				return
+			}
+
+			log.Printf("Task %s declared unhealthy after %d consecutive failures, restarting\n", t.ID, failures)
+			m.restartTask(t)
+			return
 		}
 	}
 }
@@ -326,10 +446,9 @@ func (m *Manager) ProcessTasks() {
 	}
 }
 
-// atrocious, nuked in the health check rework
-func getHostPort(ports []task.PortMapping) int {
+func hostPortFor(ports []task.PortMapping, containerPort int) int {
 	for _, pm := range ports {
-		if pm.HostPort != 0 {
+		if pm.ContainerPort == containerPort && pm.HostPort != 0 {
 			return pm.HostPort
 		}
 	}
