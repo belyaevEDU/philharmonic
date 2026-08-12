@@ -86,6 +86,9 @@ func (w *Worker) StartTask(t task.Task) task.DockerResult {
 
 	d, err := task.NewDocker(config)
 	if err != nil {
+		t.State = task.Failed
+		t.FailureReason = fmt.Sprintf("could not create docker client: %v", err)
+		w.Db[t.ID] = &t
 		return task.DockerResult{Error: err}
 	}
 
@@ -98,6 +101,7 @@ func (w *Worker) StartTask(t task.Task) task.DockerResult {
 	if result.Error != nil {
 		log.Printf("Error running task %v: %v\n", t.ID, result.Error)
 		t.State = task.Failed
+		t.FailureReason = fmt.Sprintf("container failed to start: %v", result.Error)
 		w.Db[t.ID] = &t
 		return result
 	}
@@ -182,6 +186,7 @@ func (w *Worker) updateTasks() {
 			if resp.Response == nil {
 				log.Printf("No container for running task %s\n", id)
 				w.Db[id].State = task.Failed
+				w.Db[id].FailureReason = "no container found for running task"
 				continue
 			}
 
@@ -191,9 +196,11 @@ func (w *Worker) updateTasks() {
 					id, resp.Response.State.Status,
 				)
 				w.Db[id].State = task.Failed
+				w.Db[id].FailureReason = fmt.Sprintf("container exited with code %d", resp.Response.State.ExitCode)
 			} else if resp.Response.State.Health != nil && resp.Response.State.Health.Status == container.Unhealthy {
 				log.Printf("Container for task %s is unhealthy", id)
 				w.Db[id].State = task.Failed
+				w.Db[id].FailureReason = "container reported unhealthy by the docker health check"
 			}
 
 			w.Db[id].HostPorts = task.PortMappingsFromPortMap(resp.Response.NetworkSettings.Ports)
