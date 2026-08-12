@@ -349,7 +349,7 @@ func (m *Manager) restartTask(t task.Task) error {
 
 	data, err := json.Marshal(te)
 	if err != nil {
-		return fmt.Errorf("unable to marshal task object %s: %w\n", t.ID, err)
+		return fmt.Errorf("unable to marshal task object %s: %w", t.ID, err)
 	}
 
 	url := fmt.Sprintf("http://%s/tasks", w)
@@ -361,7 +361,7 @@ func (m *Manager) restartTask(t task.Task) error {
 	defer func() {
 		err = resp.Body.Close()
 		if err != nil {
-			log.Printf("Error closing response body: %v\n", err)
+			log.Printf("Error closing response body: %v", err)
 		}
 	}()
 
@@ -370,7 +370,7 @@ func (m *Manager) restartTask(t task.Task) error {
 		hr := worker.HTTPResponse{}
 		err := d.Decode(&hr)
 		if err != nil {
-			return fmt.Errorf("error decoding response: %w\n", err)
+			return fmt.Errorf("error decoding response: %w", err)
 		}
 		return fmt.Errorf("response error (%d): %s", hr.HTTPStatusCode, hr.Message)
 	}
