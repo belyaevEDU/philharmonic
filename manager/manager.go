@@ -126,11 +126,17 @@ func (m *Manager) SendWork() {
 			m.Pending.Enqueue(te)
 			return
 		}
+		defer func() {
+			err = resp.Body.Close()
+			if err != nil {
+				log.Printf("Error closing response body: %v\n", err)
+			}
+		}()
 
 		d := json.NewDecoder(resp.Body)
 		if resp.StatusCode != http.StatusCreated {
 			hr := handlers.HTTPResponse{}
-			err := d.Decode(&e)
+			err := d.Decode(&hr)
 			if err != nil {
 				fmt.Printf("Error decoding response: %v\n", err)
 				return
@@ -165,6 +171,12 @@ func (m *Manager) updateTasks() {
 			log.Printf("Error connecting to %s: %v\n", worker, err)
 			continue
 		}
+		defer func() {
+			err = resp.Body.Close()
+			if err != nil {
+				log.Printf("Error closing response body: %v\n", err)
+			}
+		}()
 
 		if resp.StatusCode != http.StatusOK {
 			log.Printf("Error sending request to worker %s: %v\n", worker, err)
@@ -249,6 +261,12 @@ func (m *Manager) restartTask(t *task.Task) {
 		m.Pending.Enqueue(te)
 		return
 	}
+	defer func() {
+		err = resp.Body.Close()
+		if err != nil {
+			log.Printf("Error closing response body: %v\n", err)
+		}
+	}()
 
 	d := json.NewDecoder(resp.Body)
 	if resp.StatusCode != http.StatusCreated {
@@ -303,7 +321,12 @@ func (m *Manager) checkTaskHealth(ctx context.Context, t *task.Task, w string) e
 		if err != nil {
 			return fmt.Errorf("error performing health check %s: %w", url, err)
 		}
-		defer resp.Body.Close()
+		defer func() {
+			err = resp.Body.Close()
+			if err != nil {
+				log.Printf("Error closing response body: %v\n", err)
+			}
+		}()
 
 		_, err = io.Copy(io.Discard, resp.Body)
 		if err != nil {
