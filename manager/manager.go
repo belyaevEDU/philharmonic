@@ -202,11 +202,25 @@ func (m *Manager) updateTasks() {
 				continue
 			}
 
-			persisted.State = t.State
-			persisted.StartTime = t.StartTime
-			persisted.FinishTime = t.FinishTime
 			persisted.ContainerID = t.ContainerID
 			persisted.HostPorts = t.HostPorts
+			persisted.StartTime = t.StartTime
+			if !t.FinishTime.IsZero() {
+				persisted.FinishTime = t.FinishTime
+			}
+
+			if t.State == task.Failed {
+				persisted.State = task.Failed
+				if t.FailureReason != "" {
+					persisted.FailureReason = t.FailureReason
+				}
+			} else if !(persisted.State == task.Failed && !persisted.FinishTime.IsZero()) {
+				// not terminal-failed -> trust the worker's state
+				persisted.State = t.State
+			}
+			// else: terminal-failed here; don't let a stale worker report
+			// (still Running before it processed the stop) resurrect it
+
 			m.mu.Unlock()
 		}
 	}
@@ -231,19 +245,21 @@ func (m *Manager) DoHealthChecks() {
 	}
 }
 
-func (m *Manager) restartTask(t *task.Task) {
+func (m *Manager) restartTask(t task.Task) {
 	m.mu.Lock()
 	w := m.TaskWorkerMap[t.ID]
 	t.State = task.Scheduled
 	t.RestartCount++
-	m.TaskDb[t.ID] = t
+	t.FailureReason = ""
+	t.FinishTime = time.Time{}
+	m.TaskDb[t.ID] = &t
 	m.mu.Unlock()
 
 	te := task.TaskEvent{
 		ID:        uuid.New(),
 		State:     task.Running,
 		Timestamp: time.Now(),
-		Task:      *t,
+		Task:      t,
 	}
 
 	data, err := json.Marshal(te)
@@ -369,12 +385,17 @@ func (m *Manager) checkTaskHealth(ctx context.Context, t *task.Task, w string) e
 			}
 		}()
 
-		_, err = io.Copy(io.Discard, resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if err != nil {
-			return fmt.Errorf("error copying to discard somehow?: %w", err)
+			return fmt.Errorf("error reading health check response: %w", err)
 		}
 
 		if resp.StatusCode != http.StatusOK {
+			output := strings.TrimSpace(string(body))
+			if output != "" {
+				return fmt.Errorf("health check %s returned %d: %s", url, resp.StatusCode, output)
+			}
+
 			return fmt.Errorf("health check %s returned %d", url, resp.StatusCode)
 		}
 		return nil
@@ -428,8 +449,22 @@ func (m *Manager) reconcileCheckers() {
 
 func (m *Manager) restartFailedTasks() {
 	for _, t := range m.getTasks() {
-		if t.State == task.Failed && t.RestartCount < MaxRestarts {
+		if t.State != task.Failed {
+			continue
+		}
+
+		if t.RestartCount < MaxRestarts {
 			m.restartTask(t)
+			continue
+		}
+
+		if t.FinishTime.IsZero() {
+			reason := t.FailureReason
+			if reason == "" {
+				reason = fmt.Sprintf("restart cap (%d) reached", MaxRestarts)
+			}
+			log.Printf("Task %s reached the restart cap (%d); marking failed and stopping its container\n", t.ID, MaxRestarts)
+			m.stopTaskTerminal(t, reason)
 		}
 	}
 }
