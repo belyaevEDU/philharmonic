@@ -93,6 +93,7 @@ type Task struct {
 	HostPorts     []PortMapping // resolved bindings reported by the daemon
 	HealthCheck   *HealthCheck
 	RestartCount  int
+	FailureReason string `json:",omitempty"`
 	StartTime     time.Time
 	FinishTime    time.Time
 }
