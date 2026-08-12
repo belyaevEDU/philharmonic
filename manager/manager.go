@@ -204,11 +204,11 @@ func (m *Manager) UpdateTasks() {
 
 func (m *Manager) DoHealthChecks() {
 	for {
-		log.Println("Performing task health check")
-		m.doHealthChecks()
-		log.Println("Task health checks completed")
-		log.Println("Sleeping for 60 seconds")
-		time.Sleep(60 * time.Second) // this is in dire need of a rewrite
+		log.Println("[Manager] Reconciling task health checkers")
+		m.reconcileCheckers()
+		m.restartFailedTasks()
+		log.Println("Sleeping for 10 seconds")
+		time.Sleep(10 * time.Second)
 	}
 }
 
