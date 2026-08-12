@@ -61,14 +61,17 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.Manager.mu.RLock()
 	taskToStop, exists := a.Manager.TaskDb[tID]
 	if !exists {
+		a.Manager.mu.RUnlock()
 		log.Printf("No task with ID %v found\n", tID)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
 	taskCopy := *taskToStop
+	a.Manager.mu.RUnlock()
 	taskCopy.State = task.Completed
 
 	te := task.TaskEvent{

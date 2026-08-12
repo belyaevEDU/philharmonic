@@ -81,6 +81,8 @@ func (m *Manager) AddTask(te task.TaskEvent) {
 }
 
 func (m *Manager) getTasks() []*task.Task {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	tasks := slices.Collect(maps.Values(m.TaskDb))
 	if tasks == nil {
 		return []*task.Task{}
@@ -102,12 +104,14 @@ func (m *Manager) SendWork() {
 		t := te.Task
 		log.Printf("Pulled %v off pending queue\n", t)
 
+		m.mu.Lock()
 		m.EventDb[te.ID] = &te
 		m.WorkerTaskMap[w] = append(m.WorkerTaskMap[w], t.ID)
 		m.TaskWorkerMap[t.ID] = w
 
 		t.State = task.Scheduled
 		m.TaskDb[t.ID] = &t
+		m.mu.Unlock()
 
 		data, err := json.Marshal(te)
 		if err != nil {
@@ -178,17 +182,20 @@ func (m *Manager) updateTasks() {
 		for _, t := range tasks {
 			log.Printf("Attempting to update task %s\n", t.ID.String())
 
-			_, ok := m.TaskDb[t.ID]
+			m.mu.Lock()
+			persisted, ok := m.TaskDb[t.ID]
 			if !ok {
+				m.mu.Unlock()
 				log.Printf("Task with ID %s not found\n", t.ID.String())
-				return
+				continue
 			}
 
-			m.TaskDb[t.ID].State = t.State
-			m.TaskDb[t.ID].StartTime = t.StartTime
-			m.TaskDb[t.ID].FinishTime = t.FinishTime
-			m.TaskDb[t.ID].ContainerID = t.ContainerID
-			m.TaskDb[t.ID].HostPorts = t.HostPorts
+			persisted.State = t.State
+			persisted.StartTime = t.StartTime
+			persisted.FinishTime = t.FinishTime
+			persisted.ContainerID = t.ContainerID
+			persisted.HostPorts = t.HostPorts
+			m.mu.Unlock()
 		}
 	}
 }
@@ -213,11 +220,12 @@ func (m *Manager) DoHealthChecks() {
 }
 
 func (m *Manager) restartTask(t *task.Task) {
+	m.mu.Lock()
 	w := m.TaskWorkerMap[t.ID]
 	t.State = task.Scheduled
 	t.RestartCount++
-
 	m.TaskDb[t.ID] = t
+	m.mu.Unlock()
 
 	te := task.TaskEvent{
 		ID:        uuid.New(),
