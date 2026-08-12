@@ -182,6 +182,7 @@ func (w *Worker) updateTasks() {
 			if resp.Response == nil {
 				log.Printf("No container for running task %s\n", id)
 				w.Db[id].State = task.Failed
+				continue
 			}
 
 			if resp.Response.State.Status == container.StateExited {
