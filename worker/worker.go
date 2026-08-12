@@ -50,6 +50,9 @@ func (w *Worker) getTask(id uuid.UUID) (task.Task, bool) {
 
 func (w *Worker) setTask(t task.Task) {
 	w.dbMu.Lock()
+	if w.Db == nil {
+		w.Db = make(map[uuid.UUID]*task.Task)
+	}
 	w.Db[t.ID] = &t
 	w.dbMu.Unlock()
 }
