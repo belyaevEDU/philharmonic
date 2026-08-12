@@ -37,6 +37,7 @@ func main() {
 
 	go w.RunTasks()
 	go w.CollectStats()
+	go w.UpdateTasks()
 	go func() {
 		err = api.Start()
 		if err != nil {
