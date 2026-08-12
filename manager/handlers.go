@@ -28,7 +28,16 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.Manager.AddTask(te)
+	err = a.Manager.AddTask(te)
+	if err != nil {
+		msg := fmt.Sprintf("Error adding task: %v\n", err)
+		responseErr := handlers.HttpResponseHelper(w, msg, http.StatusConflict)
+		if responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
+		}
+		return
+	}
+
 	log.Printf("Added task %v\n", te.Task.ID)
 	w.WriteHeader(http.StatusCreated)
 	err = json.NewEncoder(w).Encode(te.Task)
@@ -78,7 +87,15 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		Task:      taskCopy,
 	}
 
-	a.Manager.AddTask(te)
+	err = a.Manager.AddTask(te)
+	if err != nil {
+		msg := fmt.Sprintf("Error queuing stop for task %s: %v\n", taskToStop.ID, err)
+		responseErr := handlers.HttpResponseHelper(w, msg, http.StatusInternalServerError)
+		if responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
+		}
+		return
+	}
 
 	log.Printf("Added task %v to stop container %v\n", taskToStop.ID, taskToStop.ContainerID)
 	w.WriteHeader(http.StatusNoContent)
