@@ -378,7 +378,7 @@ func (m *Manager) restartTask(t task.Task) error {
 	newTask := task.Task{}
 	err = d.Decode(&newTask)
 	if err != nil {
-		return fmt.Errorf("error decoding response: %w\n", err)
+		return fmt.Errorf("error decoding response: %w", err)
 	}
 
 	log.Printf("Task restarted: %#v\n", newTask)
