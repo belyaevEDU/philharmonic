@@ -17,7 +17,6 @@ import (
 	"github.com/belyaevedu/philharmonic/worker"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
-	"github.com/moby/moby/api/types/network"
 )
 
 const (
@@ -273,14 +272,14 @@ func (m *Manager) checkTaskHealth(t task.Task) error {
 	}
 
 	hostPort := getHostPort(t.HostPorts)
-	if hostPort == nil {
+	if hostPort == 0 {
 		msg := fmt.Sprintf("task %s has no published host ports to health check", t.ID)
 		log.Println(msg)
 		return errors.New(msg)
 	}
 
 	worker := strings.Split(w, ":")
-	url := fmt.Sprintf("http://%s:%s%s", worker[0], *hostPort, t.HealthCheck)
+	url := fmt.Sprintf("http://%s:%d%s", worker[0], hostPort, t.HealthCheck)
 
 	log.Printf("Calling health check for task %s: %s\n", t.ID, url)
 
@@ -327,11 +326,12 @@ func (m *Manager) ProcessTasks() {
 	}
 }
 
-func getHostPort(ports network.PortMap) *string {
-	for k := range ports {
-		if len(ports[k]) > 0 {
-			return &ports[k][0].HostPort // atrocious, dies in the health check rework
+// atrocious, nuked in the health check rework
+func getHostPort(ports []task.PortMapping) int {
+	for _, pm := range ports {
+		if pm.HostPort != 0 {
+			return pm.HostPort
 		}
 	}
-	return nil
+	return 0
 }
