@@ -195,7 +195,16 @@ func PortMappingsFromPortMap(ports network.PortMap) []PortMapping {
 	// just for the api to be deterministic
 	// because go maps' iteration order is basically randomized
 	slices.SortFunc(out, func(a, b PortMapping) int {
-		return cmp.Or(cmp.Compare(a.ContainerPort, b.ContainerPort), cmp.Compare(a.HostPort, b.HostPort))
+		return cmp.Or(
+			cmp.Compare(a.ContainerPort, b.ContainerPort),
+			cmp.Compare(a.HostPort, b.HostPort),
+			cmp.Compare(a.Protocol, b.Protocol),
+		)
+	})
+
+	// the daemon reports both IPv4 and IPv6 for every binding, so
+	out = slices.CompactFunc(out, func(a, b PortMapping) bool {
+		return a == b
 	})
 
 	return out
