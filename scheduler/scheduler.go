@@ -5,6 +5,10 @@ import (
 	"github.com/belyaevedu/philharmonic/task"
 )
 
+const (
+	RoundRobinDefaultName = "roundrobin"
+)
+
 type Scheduler interface {
 	SelectCandidateNodes(t *task.Task, nodes []*node.Node) []*node.Node
 	Score(t *task.Task, nodes []*node.Node) map[string]float64 // lower = better
