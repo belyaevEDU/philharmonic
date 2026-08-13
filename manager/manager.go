@@ -17,7 +17,6 @@ import (
 	"github.com/belyaevedu/philharmonic/node"
 	"github.com/belyaevedu/philharmonic/scheduler"
 	"github.com/belyaevedu/philharmonic/task"
-	"github.com/belyaevedu/philharmonic/worker"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
 )
@@ -220,15 +219,6 @@ func (m *Manager) SendWork() {
 		}
 		log.Printf("Pulled %v off pending queue\n", t)
 
-		m.mu.Lock()
-		m.EventDb[te.ID] = &te
-		if !isStop {
-			m.WorkerTaskMap[w.Name] = append(m.WorkerTaskMap[w.Name], t.ID)
-			m.TaskWorkerMap[t.ID] = w.Name
-			m.TaskDb[t.ID] = &t
-		}
-		m.mu.Unlock()
-
 		data, err := json.Marshal(te)
 		if err != nil {
 			log.Printf("Error raised when marshalling task object %v: %v\n", t, err)
@@ -253,15 +243,37 @@ func (m *Manager) SendWork() {
 		d := json.NewDecoder(resp.Body)
 		if resp.StatusCode != http.StatusCreated {
 			hr := handlers.HTTPResponse{}
-			err := d.Decode(&hr)
-			if err != nil {
+			if err := d.Decode(&hr); err != nil {
 				fmt.Printf("Error decoding response: %v\n", err)
+			} else {
+				log.Printf("Response error (%d): %s", hr.HTTPStatusCode, hr.Message)
+			}
+			if isStop {
+				// a rejected stop leaves the task running.
+				// we neither requeue (would loop forever against the fixed owning worker)
+				// nor mark Failed (would make restartFailedTasks try to *restart* a task
+				// the user asked to stop). just log it and hope for the best
 				return
 			}
-
-			log.Printf("Response error (%d): %s", hr.HTTPStatusCode, hr.Message)
+			// rejection of a start/restart: marking it failed w/o term to try & restart again
+			reason := fmt.Sprintf("worker %s rejected task (%d)", w.Name, resp.StatusCode)
+			if hr.Message != "" {
+				reason = fmt.Sprintf("%s: %s", reason, hr.Message)
+			}
+			m.markFailed(t.ID, t.RestartCount+1, reason)
 			return
 		}
+
+		m.mu.Lock()
+		m.EventDb[te.ID] = &te
+		if !isStop {
+			if m.TaskWorkerMap[t.ID] != w.Name {
+				m.WorkerTaskMap[w.Name] = append(m.WorkerTaskMap[w.Name], t.ID)
+			}
+			m.TaskWorkerMap[t.ID] = w.Name
+			m.TaskDb[t.ID] = &t
+		}
+		m.mu.Unlock()
 
 		// the worker api returns the json of the newly created task
 		// in response to POST /tasks
