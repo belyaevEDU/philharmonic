@@ -81,19 +81,16 @@ func New(workers []string, schedulerType string) *Manager {
 	}
 }
 
-func (m *Manager) SelectWorker() string {
-	// naive round-robin
-	// e-pvm later
-
-	var newWorker int
-	if m.LastWorker+1 < len(m.Workers) {
-		newWorker = m.LastWorker + 1
-	} else {
-		m.LastWorker = 0
+func (m *Manager) SelectWorker(t *task.Task) (*node.Node, error) {
+	candidates := m.Scheduler.SelectCandidateNodes(t, m.WorkerNodes)
+	if candidates == nil {
+		return nil, fmt.Errorf("No available candidates match resource requets for task %s", t.ID)
 	}
-	m.LastWorker = newWorker
 
-	return m.Workers[newWorker]
+	scores := m.Scheduler.Score(t, candidates)
+	selectedNode := m.Scheduler.Pick(scores, candidates)
+
+	return selectedNode, nil
 }
 
 func (m *Manager) AddTask(te task.TaskEvent) error {
@@ -175,7 +172,6 @@ func (m *Manager) taskWorker(id uuid.UUID) string {
 
 func (m *Manager) SendWork() {
 	if m.pendingLen() > 0 {
-		w := m.SelectWorker()
 		te, ok := m.dequeuePending()
 		if !ok {
 			log.Println("A non-task.TaskEvent object somehow got in the queue")
@@ -183,6 +179,12 @@ func (m *Manager) SendWork() {
 		}
 
 		t := te.Task
+		w, err := m.SelectWorker(&t)
+		if err != nil {
+			log.Printf("Error selecting worker for task %s: %v\n", t.ID, err)
+			return
+		}
+
 		isStop := te.State == task.Completed || t.State == task.Completed
 		if !isStop {
 			t.State = task.Scheduled
@@ -197,8 +199,8 @@ func (m *Manager) SendWork() {
 		m.mu.Lock()
 		m.EventDb[te.ID] = &te
 		if !isStop {
-			m.WorkerTaskMap[w] = append(m.WorkerTaskMap[w], t.ID)
-			m.TaskWorkerMap[t.ID] = w
+			m.WorkerTaskMap[w.Name] = append(m.WorkerTaskMap[w.Name], t.ID)
+			m.TaskWorkerMap[t.ID] = w.Name
 			m.TaskDb[t.ID] = &t
 		}
 		m.mu.Unlock()
@@ -206,9 +208,10 @@ func (m *Manager) SendWork() {
 		data, err := json.Marshal(te)
 		if err != nil {
 			log.Printf("Error raised when marshalling task object %v: %v\n", t, err)
+			return
 		}
 
-		url := fmt.Sprintf(WorkerTasksURL, w)
+		url := fmt.Sprintf(WorkerTasksURL, w.Name)
 		// ignoring gosec's G107 since the url is not from external input, but from an internal config
 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 		if err != nil {
