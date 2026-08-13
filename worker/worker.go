@@ -119,6 +119,20 @@ func (w *Worker) runTask() task.DockerResult {
 	w.dbMu.Lock()
 	taskPersisted := w.Db[taskQueued.ID]
 	if taskPersisted == nil {
+		// w.Db has to store the CURRENT state of the container
+		// so we update it if its new and scheduled
+		// all other changes will be stored by startTask and stopTask down the line
+
+		if taskQueued.State != task.Scheduled {
+			w.dbMu.Unlock()
+			return task.DockerResult{
+				Error: fmt.Errorf(
+					"task %s is not known to this worker (state %v); refusing to process",
+					taskQueued.ID.String(), taskQueued.State,
+				),
+			}
+		}
+
 		persisted := taskQueued
 		taskPersisted = &persisted
 		w.Db[taskQueued.ID] = taskPersisted
