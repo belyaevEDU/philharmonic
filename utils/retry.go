@@ -9,7 +9,7 @@ import (
 
 func HTTPWithRetry(f func(string) (*http.Response, error), url string, maxTries int, period int) (*http.Response, error) {
 	if maxTries <= 0 || period <= 0 {
-		return nil, errors.New("Invalid integer argument, needs to be positive")
+		return nil, errors.New("invalid integer argument, needs to be positive")
 	}
 
 	var resp *http.Response
