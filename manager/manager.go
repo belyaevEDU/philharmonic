@@ -190,23 +190,17 @@ func (m *Manager) SendWork() {
 		t := te.Task
 		isStop := te.State == task.Completed || t.State == task.Completed
 
-		// a stop must go to the worker that owns the task's container
 		var w *node.Node
-		if isStop {
-			m.mu.RLock()
-			owner := m.TaskWorkerMap[t.ID]
-			m.mu.RUnlock()
-
-			for _, n := range m.WorkerNodes {
-				if n.Name == owner {
-					w = n
-					break
-				}
-			}
+		owner := m.taskWorker(t.ID)
+		if owner != "" {
+			w = m.workerByName(owner)
 			if w == nil {
-				log.Printf("Cannot stop task %s: no worker owns it (looked for %q)\n", t.ID, owner)
+				log.Printf("Cannot send task %s: assigned worker %q is unavailable\n", t.ID, owner)
 				return
 			}
+		} else if isStop {
+			log.Printf("Cannot stop task %s: no worker owns it\n", t.ID)
+			return
 		} else {
 			var err error
 			w, err = m.SelectWorker(&t)
@@ -214,7 +208,9 @@ func (m *Manager) SendWork() {
 				log.Printf("Error selecting worker for task %s: %v\n", t.ID, err)
 				return
 			}
+		}
 
+		if !isStop {
 			t.State = task.Scheduled
 			te.Task = t
 			te.State = task.Scheduled
