@@ -57,12 +57,18 @@ func (s *Stats) DiskUsed() uint64 {
 
 // cpu-related helpers
 
-func (s *Stats) CpuUsage() float64 {
+func (s *Stats) CpuUsageSplit() (idle uint64, nonIdle uint64) {
 	// https://stackoverflow.com/questions/23367857/accurate-calculation-of-cpu-usage-given-in-percentage-in-linux
 	// lord almighty...
-	idle := s.CpuStats.Idle + s.CpuStats.IOWait
-	nonIdle := s.CpuStats.User + s.CpuStats.Nice + s.CpuStats.System +
+	idle = s.CpuStats.Idle + s.CpuStats.IOWait
+	nonIdle = s.CpuStats.User + s.CpuStats.Nice + s.CpuStats.System +
 		s.CpuStats.IRQ + s.CpuStats.SoftIRQ + s.CpuStats.Steal
+
+	return idle, nonIdle
+}
+
+func (s *Stats) CpuUsage() float64 {
+	idle, nonIdle := s.CpuUsageSplit()
 	total := idle + nonIdle
 
 	if total == 0 {
