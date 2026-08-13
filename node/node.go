@@ -64,5 +64,11 @@ func (n *Node) GetStats() (*stats.Stats, error) {
 	if err := json.Unmarshal(body, &stats); err != nil {
 		return nil, fmt.Errorf("error unmarshalling body of stats from %v: %w", n.Api, err)
 	}
+
+	n.Memory = int64(stats.MemTotalKb())
+	n.Disk = int64(stats.DiskTotal())
+
+	n.Stats = stats
+
 	return &stats, nil
 }
