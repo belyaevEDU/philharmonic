@@ -28,29 +28,50 @@ func main() {
 		return
 	}
 
-	fmt.Println("starting worker")
-	w := worker.Worker{
+	fmt.Println("starting workers")
+	w1 := worker.Worker{
 		Queue: *queue.New(),
 		Db:    make(map[uuid.UUID]*task.Task),
 	}
-	api := worker.Api{Address: whost, Port: wport, Worker: &w}
+	wapi1 := worker.Api{Address: whost, Port: wport, Worker: &w1}
 
-	go w.RunTasks()
-	go w.CollectStats()
-	go w.UpdateTasks()
-	go func() {
-		err = api.Start()
-		if err != nil {
-			fmt.Printf("Error raised when starting the http server: %v", err)
-			os.Exit(1)
-		}
-	}()
+	w2 := worker.Worker{
+		Queue: *queue.New(),
+		Db:    make(map[uuid.UUID]*task.Task),
+	}
+	wapi2 := worker.Api{Address: whost, Port: wport + 1, Worker: &w2}
+
+	w3 := worker.Worker{
+		Queue: *queue.New(),
+		Db:    make(map[uuid.UUID]*task.Task),
+	}
+	wapi3 := worker.Api{Address: whost, Port: wport + 2, Worker: &w3}
+
+	for _, w := range []*worker.Worker{&w1, &w2, &w3} {
+		go w.RunTasks()
+		go w.CollectStats()
+		go w.UpdateTasks()
+	}
+
+	for _, api := range []*worker.Api{&wapi1, &wapi2, &wapi3} {
+		go func(api *worker.Api) {
+			err := api.Start()
+			if err != nil {
+				fmt.Printf("Error raised when starting the http server: %v", err)
+				os.Exit(1)
+			}
+		}(api)
+	}
 
 	time.Sleep(2 * time.Second)
 
 	fmt.Println("Starting manager")
 
-	workers := []string{fmt.Sprintf("%s:%d", whost, wport)}
+	workers := []string{
+		fmt.Sprintf("%s:%d", whost, wport),
+		fmt.Sprintf("%s:%d", whost, wport+1),
+		fmt.Sprintf("%s:%d", whost, wport+2),
+	}
 	m := manager.New(workers, "")
 	mapi := manager.Api{Address: mhost, Port: mport, Manager: m}
 
