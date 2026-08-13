@@ -15,11 +15,6 @@ type Api struct {
 	Router  *chi.Mux
 }
 
-type HTTPResponse struct {
-	HTTPStatusCode int
-	Message        string
-}
-
 func (a *Api) initRouter() {
 	a.Router = chi.NewRouter()
 	a.Router.Route("/tasks", func(r chi.Router) {

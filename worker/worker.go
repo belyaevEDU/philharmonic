@@ -24,6 +24,7 @@ type Worker struct {
 
 	dbMu    sync.RWMutex
 	queueMu sync.Mutex
+	statsMu sync.RWMutex
 }
 
 func (w *Worker) getTasks() []*task.Task {
@@ -285,8 +286,13 @@ func (w *Worker) RunTasks() {
 func (w *Worker) CollectStats() {
 	for {
 		log.Println("Collecting stats...")
-		w.Stats = stats.GetStats()
-		w.Stats.TaskCount = w.TaskCount
+		stats := GetStats()
+		stats.TaskCount = w.TaskCount
+
+		w.statsMu.Lock()
+		w.Stats = stats
+		w.statsMu.Unlock()
+
 		time.Sleep(10 * time.Second)
 	}
 }

@@ -78,7 +78,12 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 func (a *Api) GetStatsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	err := json.NewEncoder(w).Encode(a.Worker.Stats)
+
+	a.Worker.statsMu.RLock()
+	stats := a.Worker.Stats
+	a.Worker.statsMu.RUnlock()
+
+	err := json.NewEncoder(w).Encode(stats)
 	if err != nil {
 		log.Printf(handlers.ErrorEncodingJson, err)
 	}

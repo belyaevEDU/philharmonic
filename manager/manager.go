@@ -17,7 +17,6 @@ import (
 	"github.com/belyaevedu/philharmonic/node"
 	"github.com/belyaevedu/philharmonic/scheduler"
 	"github.com/belyaevedu/philharmonic/task"
-	"github.com/belyaevedu/philharmonic/worker"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
 )
@@ -172,6 +171,15 @@ func (m *Manager) taskWorker(id uuid.UUID) string {
 	return m.TaskWorkerMap[id]
 }
 
+func (m *Manager) workerByName(name string) *node.Node {
+	for _, worker := range m.WorkerNodes {
+		if worker.Name == name {
+			return worker
+		}
+	}
+	return nil
+}
+
 func (m *Manager) SendWork() {
 	if m.pendingLen() > 0 {
 		te, ok := m.dequeuePending()
@@ -183,23 +191,17 @@ func (m *Manager) SendWork() {
 		t := te.Task
 		isStop := te.State == task.Completed || t.State == task.Completed
 
-		// a stop must go to the worker that owns the task's container
 		var w *node.Node
-		if isStop {
-			m.mu.RLock()
-			owner := m.TaskWorkerMap[t.ID]
-			m.mu.RUnlock()
-
-			for _, n := range m.WorkerNodes {
-				if n.Name == owner {
-					w = n
-					break
-				}
-			}
+		owner := m.taskWorker(t.ID)
+		if owner != "" {
+			w = m.workerByName(owner)
 			if w == nil {
-				log.Printf("Cannot stop task %s: no worker owns it (looked for %q)\n", t.ID, owner)
+				log.Printf("Cannot send task %s: assigned worker %q is unavailable\n", t.ID, owner)
 				return
 			}
+		} else if isStop {
+			log.Printf("Cannot stop task %s: no worker owns it\n", t.ID)
+			return
 		} else {
 			var err error
 			w, err = m.SelectWorker(&t)
@@ -207,7 +209,9 @@ func (m *Manager) SendWork() {
 				log.Printf("Error selecting worker for task %s: %v\n", t.ID, err)
 				return
 			}
+		}
 
+		if !isStop {
 			t.State = task.Scheduled
 			te.Task = t
 			te.State = task.Scheduled
@@ -216,15 +220,6 @@ func (m *Manager) SendWork() {
 			}
 		}
 		log.Printf("Pulled %v off pending queue\n", t)
-
-		m.mu.Lock()
-		m.EventDb[te.ID] = &te
-		if !isStop {
-			m.WorkerTaskMap[w.Name] = append(m.WorkerTaskMap[w.Name], t.ID)
-			m.TaskWorkerMap[t.ID] = w.Name
-			m.TaskDb[t.ID] = &t
-		}
-		m.mu.Unlock()
 
 		data, err := json.Marshal(te)
 		if err != nil {
@@ -250,15 +245,37 @@ func (m *Manager) SendWork() {
 		d := json.NewDecoder(resp.Body)
 		if resp.StatusCode != http.StatusCreated {
 			hr := handlers.HTTPResponse{}
-			err := d.Decode(&hr)
-			if err != nil {
+			if err := d.Decode(&hr); err != nil {
 				fmt.Printf("Error decoding response: %v\n", err)
+			} else {
+				log.Printf("Response error (%d): %s", hr.HTTPStatusCode, hr.Message)
+			}
+			if isStop {
+				// a rejected stop leaves the task running.
+				// we neither requeue (would loop forever against the fixed owning worker)
+				// nor mark Failed (would make restartFailedTasks try to *restart* a task
+				// the user asked to stop). just log it and hope for the best
 				return
 			}
-
-			log.Printf("Response error (%d): %s", hr.HTTPStatusCode, hr.Message)
+			// rejection of a start/restart: marking it failed w/o term to try & restart again
+			reason := fmt.Sprintf("worker %s rejected task (%d)", w.Name, resp.StatusCode)
+			if hr.Message != "" {
+				reason = fmt.Sprintf("%s: %s", reason, hr.Message)
+			}
+			m.markFailed(t.ID, t.RestartCount+1, reason)
 			return
 		}
+
+		m.mu.Lock()
+		m.EventDb[te.ID] = &te
+		if !isStop {
+			if m.TaskWorkerMap[t.ID] != w.Name {
+				m.WorkerTaskMap[w.Name] = append(m.WorkerTaskMap[w.Name], t.ID)
+			}
+			m.TaskWorkerMap[t.ID] = w.Name
+			m.TaskDb[t.ID] = &t
+		}
+		m.mu.Unlock()
 
 		// the worker api returns the json of the newly created task
 		// in response to POST /tasks
@@ -375,59 +392,115 @@ func (m *Manager) DoHealthChecks() {
 }
 
 func (m *Manager) restartTask(t task.Task) error {
-	m.mu.Lock()
-	w := m.TaskWorkerMap[t.ID]
-	t.State = task.Scheduled
-	t.RestartCount++
-	t.FailureReason = ""
-	t.StartTime = time.Time{}
-	t.FinishTime = time.Time{}
-	m.TaskDb[t.ID] = &t
-	m.mu.Unlock()
+	// restartTask schedules a restart of t on its owning worker
+	// for a task with no owner re-schedules it via the scheduler
+	owner := m.taskWorker(t.ID)
+
+	next := t
+	next.State = task.Scheduled
+	next.RestartCount = t.RestartCount + 1
+	next.FailureReason = ""
+	next.StartTime = time.Time{}
+	next.FinishTime = time.Time{}
+
+	var w *node.Node
+	if owner != "" {
+		w = m.workerByName(owner)
+		if w == nil {
+			reason := fmt.Sprintf("assigned worker %q is unavailable", owner)
+			m.markFailed(t.ID, t.RestartCount+1, reason)
+			return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
+		}
+	} else {
+		var err error
+		w, err = m.SelectWorker(&next)
+		if err != nil {
+			reason := fmt.Sprintf("no available worker to restart: %v", err)
+			m.markFailed(t.ID, t.RestartCount+1, reason)
+			return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
+		}
+	}
 
 	te := task.TaskEvent{
 		ID:        uuid.New(),
 		State:     task.Scheduled,
 		Timestamp: time.Now().UTC(),
-		Task:      t,
+		Task:      next,
 	}
 
 	data, err := json.Marshal(te)
 	if err != nil {
-		return fmt.Errorf("unable to marshal task object %s: %w", t.ID, err)
+		reason := fmt.Sprintf("unable to marshal restart event: %v", err)
+		m.markFailed(t.ID, t.RestartCount+1, reason)
+		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
 	}
 
-	url := fmt.Sprintf("http://%s/tasks", w)
+	url := fmt.Sprintf(WorkerTasksURL, w.Name)
+	// ignoring gosec's G107 since the url is not from external input, but from an internal config
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
-		m.enqueuePending(te)
-		return fmt.Errorf("error POSTing to %s: %w", w, err)
+		// the worker never saw the restart, so don't burn a restart slot
+		reason := fmt.Sprintf("could not reach worker %s to restart: %v", w.Name, err)
+		m.markFailed(t.ID, t.RestartCount, reason)
+		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
 	}
 	defer func() {
-		err = resp.Body.Close()
-		if err != nil {
-			log.Printf("Error closing response body: %v", err)
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Error closing response body: %v\n", err)
 		}
 	}()
 
 	d := json.NewDecoder(resp.Body)
 	if resp.StatusCode != http.StatusCreated {
-		hr := worker.HTTPResponse{}
-		err := d.Decode(&hr)
-		if err != nil {
-			return fmt.Errorf("error decoding response: %w", err)
+		hr := handlers.HTTPResponse{}
+		if err := d.Decode(&hr); err != nil {
+			log.Printf("Error decoding rejection response: %v\n", err)
 		}
-		return fmt.Errorf("response error (%d): %s", hr.HTTPStatusCode, hr.Message)
+		// the worker refused the restart, so burn a slot and
+		// let restartFailedTasks bound the retries via MaxRestarts
+		reason := fmt.Sprintf("worker %s rejected restart (%d)", w.Name, resp.StatusCode)
+		if hr.Message != "" {
+			reason = fmt.Sprintf("%s: %s", reason, hr.Message)
+		}
+		m.markFailed(t.ID, t.RestartCount+1, reason)
+		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
 	}
 
+	m.mu.Lock()
+	if m.TaskWorkerMap[t.ID] != w.Name {
+		m.WorkerTaskMap[w.Name] = append(m.WorkerTaskMap[w.Name], t.ID)
+	}
+	m.TaskWorkerMap[t.ID] = w.Name
+	m.TaskDb[t.ID] = &next
+	m.mu.Unlock()
+
 	newTask := task.Task{}
-	err = d.Decode(&newTask)
-	if err != nil {
-		return fmt.Errorf("error decoding response: %w", err)
+	if err := d.Decode(&newTask); err != nil {
+		log.Printf("Error decoding restart response: %v\n", err)
+		// ownership already commited via 201, so we dont really care about a json decoding error
+		return nil
 	}
 
 	log.Printf("Task restarted: %#v\n", newTask)
 	return nil
+}
+
+// markFailed records a task as Failed with the given restart count and reason
+// clearing any prior terminal stamp (FinishTime = 0)
+// so restartFailedTasks can drive the task again
+func (m *Manager) markFailed(id uuid.UUID, restartCount int, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	persisted, ok := m.TaskDb[id]
+	if !ok {
+		persisted = &task.Task{ID: id}
+		m.TaskDb[id] = persisted
+	}
+	persisted.State = task.Failed
+	persisted.RestartCount = restartCount
+	persisted.FailureReason = reason
+	persisted.FinishTime = time.Time{}
 }
 
 func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
