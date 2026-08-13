@@ -286,7 +286,7 @@ func (w *Worker) RunTasks() {
 func (w *Worker) CollectStats() {
 	for {
 		log.Println("Collecting stats...")
-		stats := GetStats()
+		stats := stats.GetStats()
 		stats.TaskCount = w.TaskCount
 
 		w.statsMu.Lock()
