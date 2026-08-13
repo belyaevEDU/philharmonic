@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/belyaevedu/philharmonic/handlers"
+	"github.com/belyaevedu/philharmonic/node"
+	"github.com/belyaevedu/philharmonic/scheduler"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/belyaevedu/philharmonic/worker"
 	"github.com/golang-collections/collections/queue"
@@ -22,6 +24,7 @@ import (
 
 const (
 	WorkerTasksURL = "http://%s/tasks"
+	WorkerRole     = "worker"
 
 	MaxRestarts = 3
 )
@@ -37,16 +40,32 @@ type Manager struct {
 	mu            sync.RWMutex
 	pendingMu     sync.Mutex
 	checkers      map[uuid.UUID]context.CancelFunc
+
+	WorkerNodes []*node.Node
+	Scheduler   scheduler.Scheduler
 }
 
-func New(workers []string) *Manager {
+func New(workers []string, schedulerType string) *Manager {
 	taskDb := make(map[uuid.UUID]*task.Task)
 	eventDb := make(map[uuid.UUID]*task.TaskEvent)
 	workerTaskMap := make(map[string][]uuid.UUID)
 	taskWorkerMap := make(map[uuid.UUID]string)
 
+	var nodes []*node.Node
 	for _, worker := range workers {
 		workerTaskMap[worker] = []uuid.UUID{}
+
+		nAPI := fmt.Sprintf("http://%v", worker)
+		n := node.NewNode(worker, nAPI, WorkerRole)
+		nodes = append(nodes, n)
+	}
+
+	var s scheduler.Scheduler
+	switch schedulerType {
+	case scheduler.RoundRobinDefaultName:
+		s = &scheduler.RoundRobin{Name: scheduler.RoundRobinDefaultName}
+	default:
+		s = &scheduler.RoundRobin{Name: scheduler.RoundRobinDefaultName}
 	}
 
 	return &Manager{
@@ -57,6 +76,8 @@ func New(workers []string) *Manager {
 		WorkerTaskMap: workerTaskMap,
 		TaskWorkerMap: taskWorkerMap,
 		checkers:      make(map[uuid.UUID]context.CancelFunc),
+		WorkerNodes:   nodes,
+		Scheduler:     s,
 	}
 }
 
