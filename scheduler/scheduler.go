@@ -17,7 +17,14 @@ type Scheduler interface {
 
 type RoundRobin struct {
 	Name       string
-	LastWorker int
+	LastWorker int // index of the last worker that received a task; -1 = none yet
+}
+
+func NewRoundRobin() *RoundRobin {
+	return &RoundRobin{
+		Name:       RoundRobinDefaultName,
+		LastWorker: -1,
+	}
 }
 
 func (r *RoundRobin) SelectCandidateNodes(t *task.Task, nodes []*node.Node) []*node.Node {
