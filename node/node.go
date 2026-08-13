@@ -1,5 +1,7 @@
 package node
 
+import "github.com/belyaevedu/philharmonic/stats"
+
 type Node struct {
 	Name            string // ip:port
 	Api             string
@@ -8,6 +10,7 @@ type Node struct {
 	MemoryAllocated int64
 	Disk            int64
 	DiskAllocated   int64
+	Stats           stats.Stats
 	Role            string
 	TaskCount       int
 }
