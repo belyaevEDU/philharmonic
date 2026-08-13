@@ -77,6 +77,12 @@ type Epvm struct {
 	Name string
 }
 
+func NewEpvm() *Epvm {
+	return &Epvm{
+		Name: EpvmDefaultName,
+	}
+}
+
 func (e *Epvm) SelectCandidateNodes(t *task.Task, nodes []*node.Node) []*node.Node {
 	var candidates []*node.Node
 	for _, node := range nodes {
