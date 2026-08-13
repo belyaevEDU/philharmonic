@@ -445,6 +445,24 @@ func (m *Manager) restartTask(t task.Task) error {
 	return nil
 }
 
+// markFailed records a task as Failed with the given restart count and reason
+// clearing any prior terminal stamp (FinishTime = 0)
+// so restartFailedTasks can drive the task again
+func (m *Manager) markFailed(id uuid.UUID, restartCount int, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	persisted, ok := m.TaskDb[id]
+	if !ok {
+		persisted = &task.Task{ID: id}
+		m.TaskDb[id] = persisted
+	}
+	persisted.State = task.Failed
+	persisted.RestartCount = restartCount
+	persisted.FailureReason = reason
+	persisted.FinishTime = time.Time{}
+}
+
 func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
 	m.mu.Lock()
 	w := m.TaskWorkerMap[t.ID]
