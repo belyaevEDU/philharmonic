@@ -4,10 +4,10 @@ type Node struct {
 	Name            string // ip:port
 	Api             string
 	Cores           int
-	Memory          int
-	MemoryAllocated int
-	Disk            int
-	DiskAllocated   int
+	Memory          int64
+	MemoryAllocated int64
+	Disk            int64
+	DiskAllocated   int64
 	Role            string
 	TaskCount       int
 }
