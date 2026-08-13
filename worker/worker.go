@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/belyaevedu/philharmonic/stats"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
@@ -18,7 +19,7 @@ type Worker struct {
 	Name      string
 	Queue     queue.Queue
 	Db        map[uuid.UUID]*task.Task
-	Stats     *Stats
+	Stats     *stats.Stats
 	TaskCount int
 
 	dbMu    sync.RWMutex
