@@ -390,55 +390,93 @@ func (m *Manager) DoHealthChecks() {
 }
 
 func (m *Manager) restartTask(t task.Task) error {
-	m.mu.Lock()
-	w := m.TaskWorkerMap[t.ID]
-	t.State = task.Scheduled
-	t.RestartCount++
-	t.FailureReason = ""
-	t.StartTime = time.Time{}
-	t.FinishTime = time.Time{}
-	m.TaskDb[t.ID] = &t
-	m.mu.Unlock()
+	// restartTask schedules a restart of t on its owning worker
+	// for a task with no owner re-schedules it via the scheduler
+	owner := m.taskWorker(t.ID)
+
+	next := t
+	next.State = task.Scheduled
+	next.RestartCount = t.RestartCount + 1
+	next.FailureReason = ""
+	next.StartTime = time.Time{}
+	next.FinishTime = time.Time{}
+
+	var w *node.Node
+	if owner != "" {
+		w = m.workerByName(owner)
+		if w == nil {
+			reason := fmt.Sprintf("assigned worker %q is unavailable", owner)
+			m.markFailed(t.ID, t.RestartCount+1, reason)
+			return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
+		}
+	} else {
+		var err error
+		w, err = m.SelectWorker(&next)
+		if err != nil {
+			reason := fmt.Sprintf("no available worker to restart: %v", err)
+			m.markFailed(t.ID, t.RestartCount+1, reason)
+			return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
+		}
+	}
 
 	te := task.TaskEvent{
 		ID:        uuid.New(),
 		State:     task.Scheduled,
 		Timestamp: time.Now().UTC(),
-		Task:      t,
+		Task:      next,
 	}
 
 	data, err := json.Marshal(te)
 	if err != nil {
-		return fmt.Errorf("unable to marshal task object %s: %w", t.ID, err)
+		reason := fmt.Sprintf("unable to marshal restart event: %v", err)
+		m.markFailed(t.ID, t.RestartCount+1, reason)
+		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
 	}
 
-	url := fmt.Sprintf("http://%s/tasks", w)
+	url := fmt.Sprintf(WorkerTasksURL, w.Name)
+	// ignoring gosec's G107 since the url is not from external input, but from an internal config
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
-		m.enqueuePending(te)
-		return fmt.Errorf("error POSTing to %s: %w", w, err)
+		// the worker never saw the restart, so don't burn a restart slot
+		reason := fmt.Sprintf("could not reach worker %s to restart: %v", w.Name, err)
+		m.markFailed(t.ID, t.RestartCount, reason)
+		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
 	}
 	defer func() {
-		err = resp.Body.Close()
-		if err != nil {
-			log.Printf("Error closing response body: %v", err)
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Error closing response body: %v\n", err)
 		}
 	}()
 
 	d := json.NewDecoder(resp.Body)
 	if resp.StatusCode != http.StatusCreated {
-		hr := worker.HTTPResponse{}
-		err := d.Decode(&hr)
-		if err != nil {
-			return fmt.Errorf("error decoding response: %w", err)
+		hr := handlers.HTTPResponse{}
+		if err := d.Decode(&hr); err != nil {
+			log.Printf("Error decoding rejection response: %v\n", err)
 		}
-		return fmt.Errorf("response error (%d): %s", hr.HTTPStatusCode, hr.Message)
+		// the worker refused the restart, so burn a slot and
+		// let restartFailedTasks bound the retries via MaxRestarts
+		reason := fmt.Sprintf("worker %s rejected restart (%d)", w.Name, resp.StatusCode)
+		if hr.Message != "" {
+			reason = fmt.Sprintf("%s: %s", reason, hr.Message)
+		}
+		m.markFailed(t.ID, t.RestartCount+1, reason)
+		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
 	}
 
+	m.mu.Lock()
+	if m.TaskWorkerMap[t.ID] != w.Name {
+		m.WorkerTaskMap[w.Name] = append(m.WorkerTaskMap[w.Name], t.ID)
+	}
+	m.TaskWorkerMap[t.ID] = w.Name
+	m.TaskDb[t.ID] = &next
+	m.mu.Unlock()
+
 	newTask := task.Task{}
-	err = d.Decode(&newTask)
-	if err != nil {
-		return fmt.Errorf("error decoding response: %w", err)
+	if err := d.Decode(&newTask); err != nil {
+		log.Printf("Error decoding restart response: %v\n", err)
+		// ownership already commited via 201, so we dont really care about a json decoding error
+		return nil
 	}
 
 	log.Printf("Task restarted: %#v\n", newTask)
