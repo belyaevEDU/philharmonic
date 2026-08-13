@@ -51,7 +51,7 @@ func main() {
 	fmt.Println("Starting manager")
 
 	workers := []string{fmt.Sprintf("%s:%d", whost, wport)}
-	m := manager.New(workers)
+	m := manager.New(workers, "")
 	mapi := manager.Api{Address: mhost, Port: mport, Manager: m}
 
 	go m.ProcessTasks()
