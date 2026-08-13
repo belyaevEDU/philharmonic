@@ -170,6 +170,15 @@ func (m *Manager) taskWorker(id uuid.UUID) string {
 	return m.TaskWorkerMap[id]
 }
 
+func (m *Manager) workerByName(name string) *node.Node {
+	for _, worker := range m.WorkerNodes {
+		if worker.Name == name {
+			return worker
+		}
+	}
+	return nil
+}
+
 func (m *Manager) SendWork() {
 	if m.pendingLen() > 0 {
 		te, ok := m.dequeuePending()
