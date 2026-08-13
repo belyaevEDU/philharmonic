@@ -1,8 +1,8 @@
 package node
 
 type Node struct {
-	Name            string
-	Ip              string
+	Name            string // ip:port
+	Api             string
 	Cores           int
 	Memory          int
 	MemoryAllocated int
@@ -12,10 +12,10 @@ type Node struct {
 	TaskCount       int
 }
 
-func NewNode(name, ip, role string) *Node {
+func NewNode(name, api, role string) *Node {
 	return &Node{
 		Name: name,
-		Ip:   ip,
+		Api:  api,
 		Role: role,
 	}
 }
