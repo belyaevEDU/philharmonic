@@ -7,11 +7,12 @@ import (
 	"sync"
 
 	"github.com/belyaevedu/philharmonic/task"
+	"github.com/google/uuid"
 )
 
 type InMemoryTaskStore struct {
 	mu sync.RWMutex
-	db map[string]*task.Task
+	db map[uuid.UUID]*task.Task
 }
 
 // compile-time interface satisfaction check
@@ -19,11 +20,11 @@ var _ Store[task.Task] = (*InMemoryTaskStore)(nil)
 
 func NewInMemoryTaskStore() *InMemoryTaskStore {
 	return &InMemoryTaskStore{
-		db: make(map[string]*task.Task),
+		db: make(map[uuid.UUID]*task.Task),
 	}
 }
 
-func (i *InMemoryTaskStore) Put(key string, value *task.Task) error {
+func (i *InMemoryTaskStore) Put(key uuid.UUID, value *task.Task) error {
 	if value == nil {
 		return errors.New("store: cannot put nil task")
 	}
@@ -31,13 +32,13 @@ func (i *InMemoryTaskStore) Put(key string, value *task.Task) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.db == nil {
-		i.db = make(map[string]*task.Task)
+		i.db = make(map[uuid.UUID]*task.Task)
 	}
 	i.db[key] = value
 	return nil
 }
 
-func (i *InMemoryTaskStore) Get(key string) (*task.Task, error) {
+func (i *InMemoryTaskStore) Get(key uuid.UUID) (*task.Task, error) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 
@@ -76,18 +77,18 @@ func (i *InMemoryTaskStore) Count() (int, error) {
 
 type InMemoryTaskEventStore struct {
 	mu sync.RWMutex
-	db map[string]*task.TaskEvent
+	db map[uuid.UUID]*task.TaskEvent
 }
 
 var _ Store[task.TaskEvent] = (*InMemoryTaskEventStore)(nil)
 
 func NewInMemoryTaskEventStore() *InMemoryTaskEventStore {
 	return &InMemoryTaskEventStore{
-		db: make(map[string]*task.TaskEvent),
+		db: make(map[uuid.UUID]*task.TaskEvent),
 	}
 }
 
-func (i *InMemoryTaskEventStore) Put(key string, value *task.TaskEvent) error {
+func (i *InMemoryTaskEventStore) Put(key uuid.UUID, value *task.TaskEvent) error {
 	if value == nil {
 		return errors.New("store: cannot put nil task event")
 	}
@@ -95,13 +96,13 @@ func (i *InMemoryTaskEventStore) Put(key string, value *task.TaskEvent) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.db == nil {
-		i.db = make(map[string]*task.TaskEvent)
+		i.db = make(map[uuid.UUID]*task.TaskEvent)
 	}
 	i.db[key] = value
 	return nil
 }
 
-func (i *InMemoryTaskEventStore) Get(key string) (*task.TaskEvent, error) {
+func (i *InMemoryTaskEventStore) Get(key uuid.UUID) (*task.TaskEvent, error) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 

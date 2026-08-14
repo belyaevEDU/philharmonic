@@ -1,6 +1,10 @@
 package store
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/google/uuid"
+)
 
 var ErrNotFound = errors.New("store: key not found")
 
@@ -9,8 +13,8 @@ const (
 )
 
 type Store[T any] interface {
-	Put(key string, value *T) error
-	Get(key string) (*T, error)
+	Put(key uuid.UUID, value *T) error
+	Get(key uuid.UUID) (*T, error)
 	List() ([]*T, error)
 	Count() (int, error)
 }
