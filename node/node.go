@@ -34,7 +34,7 @@ type Node struct {
 	mu sync.Mutex
 }
 
-func NewNode(address, api, role string) (*Node, error) {
+func New(address, api, role string) (*Node, error) {
 	if err := validateAddress(address); err != nil {
 		return nil, fmt.Errorf("invalid node address %q: %w", address, err)
 	}
