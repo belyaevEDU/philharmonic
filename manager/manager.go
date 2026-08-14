@@ -84,12 +84,15 @@ func New(workers []string, schedulerType string) *Manager {
 
 func (m *Manager) SelectWorker(t *task.Task) (*node.Node, error) {
 	candidates := m.Scheduler.SelectCandidateNodes(t, m.WorkerNodes)
-	if candidates == nil {
+	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no available candidates match resource requests for task %s", t.ID)
 	}
 
 	scores := m.Scheduler.Score(t, candidates)
 	selectedNode := m.Scheduler.Pick(scores, candidates)
+	if selectedNode == nil {
+		return nil, fmt.Errorf("no candidate able to host task %s (all unscoreable)", t.ID)
+	}
 
 	return selectedNode, nil
 }
