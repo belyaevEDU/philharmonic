@@ -148,7 +148,11 @@ func (e *Epvm) Score(t *task.Task, nodes []*node.Node) map[string]float64 {
 func (e *Epvm) Pick(scores map[string]float64, candidates []*node.Node) *node.Node {
 	var best *node.Node
 	for _, n := range candidates {
-		if best == nil || scores[n.Name] < scores[best.Name] {
+		score := scores[n.Name]
+		if score == math.MaxFloat64 {
+			continue
+		}
+		if best == nil || score < scores[best.Name] {
 			best = n
 		}
 	}
