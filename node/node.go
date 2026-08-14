@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
+	"sync"
 
 	"github.com/belyaevedu/philharmonic/stats"
 	"github.com/belyaevedu/philharmonic/utils"
@@ -19,14 +21,14 @@ const (
 type Node struct {
 	Name            string // ip:port
 	Api             string
-	Cores           int
-	Memory          int64
-	MemoryAllocated int64
-	Disk            int64
-	DiskAllocated   int64
+	Cores           int   // logical CPUs reported by the worker
+	Memory          int64 // total memory in KB
+	Disk            int64 // total disk in bytes
+	MemoryAllocated int64 // bytes reserved by the worker's running tasks
 	Stats           stats.Stats
 	Role            string
-	TaskCount       int
+
+	mu sync.Mutex
 }
 
 func NewNode(name, api, role string) *Node {
@@ -44,8 +46,8 @@ func (n *Node) GetStats() (*stats.Stats, error) {
 		return nil, fmt.Errorf("error connecting to %v: %w", n.Api, err)
 	}
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("error retrieving stats from %v: %w", n.Api, err)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("error retrieving stats from %v: status %d", n.Api, resp.StatusCode)
 	}
 
 	defer func() {
@@ -60,15 +62,52 @@ func (n *Node) GetStats() (*stats.Stats, error) {
 		return nil, fmt.Errorf("error reading stats resp body from %v: %w", n.Api, err)
 	}
 
-	var stats stats.Stats
-	if err := json.Unmarshal(body, &stats); err != nil {
+	var s stats.Stats
+	if err := json.Unmarshal(body, &s); err != nil {
 		return nil, fmt.Errorf("error unmarshalling body of stats from %v: %w", n.Api, err)
 	}
 
-	n.Memory = int64(stats.MemTotalKb())
-	n.Disk = int64(stats.DiskTotal())
+	n.mu.Lock()
+	n.Cores = s.Cores
+	n.Memory = clampToInt64(s.MemTotalKb())
+	n.Disk = clampToInt64(s.DiskTotal())
+	n.MemoryAllocated = s.MemoryAllocated
+	n.Stats = s
+	n.mu.Unlock()
 
-	n.Stats = stats
+	return &s, nil
+}
 
-	return &stats, nil
+// a concurrency-safe point-in-time copy of the resource fields
+type Snapshot struct {
+	Cores            int
+	MemoryTotalKB    int64
+	MemUsedKB        int64
+	MemoryAllocatedB int64
+	DiskFreeB        int64
+	CpuUsage         float64
+	TaskCount        int
+}
+
+func (n *Node) Snapshot() Snapshot {
+	n.mu.Lock() // not RLock to prevent data race
+	defer n.mu.Unlock()
+
+	return Snapshot{
+		Cores:            n.Cores,
+		MemoryTotalKB:    n.Memory,
+		MemUsedKB:        clampToInt64(n.Stats.MemUsedKb()),
+		MemoryAllocatedB: n.MemoryAllocated,
+		DiskFreeB:        clampToInt64(n.Stats.DiskFree()),
+		CpuUsage:         n.Stats.CpuUsage,
+		TaskCount:        n.Stats.TaskCount,
+	}
+}
+
+// gosec G115 fix: preventing overflow
+func clampToInt64(u uint64) int64 {
+	if u > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(u)
 }
