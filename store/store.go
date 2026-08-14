@@ -4,9 +4,9 @@ const (
 	MemoryType = "memory"
 )
 
-type Store interface {
-	Put(key string, value any) error
-	Get(key string) (any, error)
-	List() (any, error)
+type Store[T any] interface {
+	Put(key string, value *T) error
+	Get(key string) (*T, error)
+	List() ([]*T, error)
 	Count() (int, error)
 }
