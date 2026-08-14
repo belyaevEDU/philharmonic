@@ -12,11 +12,14 @@ const (
 	RoundRobinDefaultName = "roundrobin"
 
 	EpvmDefaultName    = "epvm"
-	EpvmMaxJobs        = 12  // move to config
-	EpvmMaxSafeCPUUtil = 0.9 // ^
+	epvmMaxJobs        = 12  // move to config
+	epvmMaxSafeCPUUtil = 0.9 // ^
 
 	// LIEB square ice constant
-	LIEB = 1.53960071783900203869
+	lieb = 1.53960071783900203869
+
+	// task.Memory/Disk are in bytes while memory stats are in KB
+	bytesPerKB = 1024.0
 )
 
 type Scheduler interface {
@@ -99,38 +102,44 @@ func (e *Epvm) SelectCandidateNodes(t *task.Task, nodes []*node.Node) []*node.No
 }
 
 func (e *Epvm) Score(t *task.Task, nodes []*node.Node) map[string]float64 {
-	nodeScores := make(map[string]float64)
+	nodeScores := make(map[string]float64, len(nodes))
 
-	for _, node := range nodes {
-		cpuUsage, err := calculateCpuUsage(node)
-		if err != nil {
-			// just logging and basically discarding the node
-			log.Printf("Error when calculating the cpu usage for node %s: %v", node.Name, err)
-			nodeScores[node.Name] = math.MaxFloat64
+	for _, n := range nodes {
+		snap := n.Snapshot()
+
+		if snap.MemoryTotalKB <= 0 {
+			// unknown capacity, so can't reason about cost, skip
+			nodeScores[n.Name] = math.MaxFloat64
 			continue
 		}
 
-		cpuLoad := calculateLoad(*cpuUsage, EpvmMaxSafeCPUUtil)
+		jobsNow := float64(snap.TaskCount)
+		jobsNext := float64(snap.TaskCount + 1)
 
-		memoryAllocated := float64(node.Stats.MemUsedKb()) + float64(node.MemoryAllocated)
-		memoryPercentAllocated := memoryAllocated / float64(node.Memory)
+		baseMemKB := float64(snap.MemUsedKB)
+		projectedMemKB := baseMemKB + float64(t.Memory)/bytesPerKB
+		memPercent := calculateLoad(baseMemKB, float64(snap.MemoryTotalKB))
+		newMemPercent := calculateLoad(projectedMemKB, float64(snap.MemoryTotalKB))
 
-		newMemPercent := calculateLoad(
-			memoryAllocated+float64(t.Memory/1000),
-			float64(node.Memory),
-		)
+		// cpu: current utilization vs. with this task's share added
+		var cpuShare float64
+		if snap.Cores > 0 {
+			cpuShare = t.Cpu / float64(snap.Cores)
+		}
+		cpuLoad := calculateLoad(snap.CpuUsage, epvmMaxSafeCPUUtil)
+		newCpuLoad := cpuLoad + calculateLoad(cpuShare, epvmMaxSafeCPUUtil)
 
-		memCost := math.Pow(LIEB, newMemPercent) +
-			math.Pow(LIEB, float64(node.TaskCount+1)/EpvmMaxJobs) -
-			math.Pow(LIEB, memoryPercentAllocated) -
-			math.Pow(LIEB, float64(node.TaskCount)/float64(EpvmMaxJobs))
+		memCost := math.Pow(lieb, newMemPercent) +
+			math.Pow(lieb, jobsNext/float64(epvmMaxJobs)) -
+			math.Pow(lieb, memPercent) -
+			math.Pow(lieb, jobsNow/float64(epvmMaxJobs))
 
-		cpuCost := math.Pow(LIEB, cpuLoad) +
-			math.Pow(LIEB, float64(node.TaskCount+1)/EpvmMaxJobs) -
-			math.Pow(LIEB, cpuLoad) -
-			math.Pow(LIEB, float64(node.TaskCount)/float64(EpvmMaxJobs))
+		cpuCost := math.Pow(lieb, newCpuLoad) +
+			math.Pow(lieb, jobsNext/float64(epvmMaxJobs)) -
+			math.Pow(lieb, cpuLoad) -
+			math.Pow(lieb, jobsNow/float64(epvmMaxJobs))
 
-		nodeScores[node.Name] = memCost + cpuCost
+		nodeScores[n.Name] = memCost + cpuCost
 	}
 
 	return nodeScores
