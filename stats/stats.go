@@ -11,7 +11,12 @@ type Stats struct {
 	DiskStats *linux.Disk
 	CpuStats  *linux.CPUStat
 	LoadStats *linux.LoadAvg
-	TaskCount int
+
+	// brought these out into their own fields since they are reported by the worker
+	TaskCount       int
+	CpuUsage        float64 // [0, 1]
+	Cores           int
+	MemoryAllocated int64 // bytes reserved by the worker's running tasks
 }
 
 func GetStats() *Stats {
