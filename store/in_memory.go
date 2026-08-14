@@ -1,7 +1,9 @@
 package store
 
 import (
-	"fmt"
+	"bytes"
+	"errors"
+	"slices"
 	"sync"
 
 	"github.com/belyaevedu/philharmonic/task"
@@ -12,16 +14,18 @@ type InMemoryTaskStore struct {
 	db map[string]*task.Task
 }
 
+// compile-time interface satisfaction check
+var _ Store[task.Task] = (*InMemoryTaskStore)(nil)
+
 func NewInMemoryTaskStore() *InMemoryTaskStore {
 	return &InMemoryTaskStore{
 		db: make(map[string]*task.Task),
 	}
 }
 
-func (i *InMemoryTaskStore) Put(key string, value any) error {
-	t, ok := value.(*task.Task)
-	if !ok || t == nil {
-		return fmt.Errorf("value %v is not a task.Task type", value)
+func (i *InMemoryTaskStore) Put(key string, value *task.Task) error {
+	if value == nil {
+		return errors.New("store: cannot put nil task")
 	}
 
 	i.mu.Lock()
@@ -29,30 +33,36 @@ func (i *InMemoryTaskStore) Put(key string, value any) error {
 	if i.db == nil {
 		i.db = make(map[string]*task.Task)
 	}
-	i.db[key] = t
+	i.db[key] = value
 	return nil
 }
 
-func (i *InMemoryTaskStore) Get(key string) (any, error) {
+func (i *InMemoryTaskStore) Get(key string) (*task.Task, error) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 
 	t, ok := i.db[key]
 	if !ok {
-		return nil, fmt.Errorf("task with key %s does not exist", key)
+		return nil, ErrNotFound
 	}
 
 	return t, nil
 }
 
-func (i *InMemoryTaskStore) List() (any, error) {
+func (i *InMemoryTaskStore) List() ([]*task.Task, error) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 
-	var tasks []*task.Task
+	tasks := make([]*task.Task, 0, len(i.db))
 	for _, t := range i.db {
 		tasks = append(tasks, t)
 	}
+
+	// map iteration order is randomized. sort by ID so API output & the
+	// manager's reconcile/restart passes are deterministic
+	slices.SortFunc(tasks, func(a, b *task.Task) int {
+		return bytes.Compare(a.ID[:], b.ID[:])
+	})
 
 	return tasks, nil
 }
@@ -69,16 +79,17 @@ type InMemoryTaskEventStore struct {
 	db map[string]*task.TaskEvent
 }
 
+var _ Store[task.TaskEvent] = (*InMemoryTaskEventStore)(nil)
+
 func NewInMemoryTaskEventStore() *InMemoryTaskEventStore {
 	return &InMemoryTaskEventStore{
 		db: make(map[string]*task.TaskEvent),
 	}
 }
 
-func (i *InMemoryTaskEventStore) Put(key string, value any) error {
-	e, ok := value.(*task.TaskEvent)
-	if !ok || e == nil {
-		return fmt.Errorf("value %v is not a task.TaskEvent type", value)
+func (i *InMemoryTaskEventStore) Put(key string, value *task.TaskEvent) error {
+	if value == nil {
+		return errors.New("store: cannot put nil task event")
 	}
 
 	i.mu.Lock()
@@ -86,30 +97,34 @@ func (i *InMemoryTaskEventStore) Put(key string, value any) error {
 	if i.db == nil {
 		i.db = make(map[string]*task.TaskEvent)
 	}
-	i.db[key] = e
+	i.db[key] = value
 	return nil
 }
 
-func (i *InMemoryTaskEventStore) Get(key string) (any, error) {
+func (i *InMemoryTaskEventStore) Get(key string) (*task.TaskEvent, error) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 
 	e, ok := i.db[key]
 	if !ok {
-		return nil, fmt.Errorf("task with key %s does not exist", key)
+		return nil, ErrNotFound
 	}
 
 	return e, nil
 }
 
-func (i *InMemoryTaskEventStore) List() (any, error) {
+func (i *InMemoryTaskEventStore) List() ([]*task.TaskEvent, error) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 
-	var events []*task.TaskEvent
+	events := make([]*task.TaskEvent, 0, len(i.db))
 	for _, e := range i.db {
 		events = append(events, e)
 	}
+
+	slices.SortFunc(events, func(a, b *task.TaskEvent) int {
+		return bytes.Compare(a.ID[:], b.ID[:])
+	})
 
 	return events, nil
 }
