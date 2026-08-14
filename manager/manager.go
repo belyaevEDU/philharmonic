@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"github.com/belyaevedu/philharmonic/handlers"
 	"github.com/belyaevedu/philharmonic/node"
 	"github.com/belyaevedu/philharmonic/scheduler"
+	"github.com/belyaevedu/philharmonic/store"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
@@ -31,8 +33,8 @@ const (
 
 type Manager struct {
 	Pending       queue.Queue
-	TaskDb        map[uuid.UUID]*task.Task
-	EventDb       map[uuid.UUID]*task.TaskEvent
+	TaskDb        store.Store[task.Task]
+	EventDb       store.Store[task.TaskEvent]
 	Workers       []string
 	WorkerTaskMap map[string][]uuid.UUID
 	TaskWorkerMap map[uuid.UUID]string
@@ -45,9 +47,7 @@ type Manager struct {
 	Scheduler   scheduler.Scheduler
 }
 
-func New(workers []string, schedulerType string) (*Manager, error) {
-	taskDb := make(map[uuid.UUID]*task.Task)
-	eventDb := make(map[uuid.UUID]*task.TaskEvent)
+func New(workers []string, schedulerType, dbType string) (*Manager, error) {
 	workerTaskMap := make(map[string][]uuid.UUID)
 	taskWorkerMap := make(map[uuid.UUID]string)
 
@@ -73,17 +73,29 @@ func New(workers []string, schedulerType string) (*Manager, error) {
 		s = scheduler.NewRoundRobin()
 	}
 
-	return &Manager{
+	m := Manager{
 		Pending:       *queue.New(),
 		Workers:       workers,
-		TaskDb:        taskDb,
-		EventDb:       eventDb,
 		WorkerTaskMap: workerTaskMap,
 		TaskWorkerMap: taskWorkerMap,
 		checkers:      make(map[uuid.UUID]context.CancelFunc),
 		WorkerNodes:   nodes,
 		Scheduler:     s,
-	}, nil
+	}
+
+	var ts store.Store[task.Task]
+	var es store.Store[task.TaskEvent]
+	switch dbType {
+	case store.MemoryType:
+		ts = store.NewInMemoryTaskStore()
+		es = store.NewInMemoryTaskEventStore()
+	default:
+		return nil, errors.New("unknown db type given")
+	}
+
+	m.TaskDb = ts
+	m.EventDb = es
+	return &m, nil
 }
 
 func (m *Manager) SelectWorker(t *task.Task) (*node.Node, error) {
@@ -106,16 +118,24 @@ func (m *Manager) AddTask(te task.TaskEvent) error {
 	if te.State != task.Completed && te.Task.State != task.Completed {
 		m.mu.Lock()
 		if m.TaskDb == nil {
-			m.TaskDb = make(map[uuid.UUID]*task.Task)
+			m.mu.Unlock()
+			return errors.New("task db is nil")
 		}
-		if _, exists := m.TaskDb[te.Task.ID]; exists {
+
+		if _, err := m.TaskDb.Get(te.Task.ID); err == nil {
 			m.mu.Unlock()
 			return fmt.Errorf("task %s already exists", te.Task.ID)
+		} else if !errors.Is(err, store.ErrNotFound) {
+			m.mu.Unlock()
+			return fmt.Errorf("checking task %s: %w", te.Task.ID, err)
 		}
 
 		queued := te.Task
 		queued.State = task.Pending // updated, not yet sent to a worker
-		m.TaskDb[queued.ID] = &queued
+		if err := m.TaskDb.Put(queued.ID, &queued); err != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("storing task %s: %w", queued.ID, err)
+		}
 		m.mu.Unlock()
 	}
 
@@ -154,9 +174,21 @@ func (m *Manager) getTasks() []task.Task {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	tasks := make([]task.Task, 0, len(m.TaskDb))
-	for _, persisted := range m.TaskDb {
-		tasks = append(tasks, *persisted)
+	if m.TaskDb == nil {
+		return []task.Task{}
+	}
+
+	persisted, err := m.TaskDb.List()
+	if err != nil {
+		log.Printf("Error listing tasks: %v\n", err)
+		return []task.Task{}
+	}
+
+	tasks := make([]task.Task, 0, len(persisted))
+	for _, t := range persisted {
+		if t != nil {
+			tasks = append(tasks, *t)
+		}
 	}
 	return tasks
 }
@@ -165,8 +197,15 @@ func (m *Manager) getTask(id uuid.UUID) (task.Task, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	persisted, ok := m.TaskDb[id]
-	if !ok {
+	if m.TaskDb == nil {
+		return task.Task{}, false
+	}
+
+	persisted, err := m.TaskDb.Get(id)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			log.Printf("Error getting task %s: %v\n", id, err)
+		}
 		return task.Task{}, false
 	}
 	return *persisted, true
@@ -274,13 +313,21 @@ func (m *Manager) SendWork() {
 		}
 
 		m.mu.Lock()
-		m.EventDb[te.ID] = &te
+		if m.EventDb == nil {
+			log.Printf("Cannot store event %s: event db is nil\n", te.ID)
+		} else if err := m.EventDb.Put(te.ID, &te); err != nil {
+			log.Printf("Error storing event %s: %v\n", te.ID, err)
+		}
 		if !isStop {
 			if m.TaskWorkerMap[t.ID] != w.Address {
 				m.WorkerTaskMap[w.Address] = append(m.WorkerTaskMap[w.Address], t.ID)
 			}
 			m.TaskWorkerMap[t.ID] = w.Address
-			m.TaskDb[t.ID] = &t
+			if m.TaskDb == nil {
+				log.Printf("Cannot store task %s: task db is nil\n", t.ID)
+			} else if err := m.TaskDb.Put(t.ID, &t); err != nil {
+				log.Printf("Error storing task %s: %v\n", t.ID, err)
+			}
 		}
 		m.mu.Unlock()
 
@@ -336,10 +383,20 @@ func (m *Manager) updateTasks() {
 			log.Printf("Attempting to update task %s\n", t.ID.String())
 
 			m.mu.Lock()
-			persisted, ok := m.TaskDb[t.ID]
-			if !ok {
+			if m.TaskDb == nil {
 				m.mu.Unlock()
-				log.Printf("Task with ID %s not found\n", t.ID.String())
+				log.Printf("Task db is nil; cannot update task %s\n", t.ID.String())
+				continue
+			}
+
+			persisted, err := m.TaskDb.Get(t.ID)
+			if err != nil {
+				m.mu.Unlock()
+				if !errors.Is(err, store.ErrNotFound) {
+					log.Printf("Error getting task %s: %v\n", t.ID.String(), err)
+				} else {
+					log.Printf("Task with ID %s not found\n", t.ID.String())
+				}
 				continue
 			}
 
@@ -354,26 +411,30 @@ func (m *Manager) updateTasks() {
 				continue
 			}
 
-			persisted.ContainerID = t.ContainerID
-			persisted.HostPorts = t.HostPorts
+			updated := *persisted
+			updated.ContainerID = t.ContainerID
+			updated.HostPorts = t.HostPorts
 			if !t.StartTime.IsZero() {
-				persisted.StartTime = t.StartTime
+				updated.StartTime = t.StartTime
 			}
 			if !t.FinishTime.IsZero() {
-				persisted.FinishTime = t.FinishTime
+				updated.FinishTime = t.FinishTime
 			}
 
 			if t.State == task.Failed {
-				persisted.State = task.Failed
+				updated.State = task.Failed
 				if t.FailureReason != "" {
-					persisted.FailureReason = t.FailureReason
+					updated.FailureReason = t.FailureReason
 				}
-			} else if persisted.State != task.Failed || persisted.FinishTime.IsZero() {
+			} else if updated.State != task.Failed || updated.FinishTime.IsZero() {
 				// not terminal-failed -> trust the worker's state
-				persisted.State = t.State
+				updated.State = t.State
 			}
 			// else: terminal-failed here
 
+			if err := m.TaskDb.Put(t.ID, &updated); err != nil {
+				log.Printf("Error updating task %s: %v\n", t.ID, err)
+			}
 			m.mu.Unlock()
 		}
 	}
@@ -478,7 +539,14 @@ func (m *Manager) restartTask(t task.Task) error {
 		m.WorkerTaskMap[w.Address] = append(m.WorkerTaskMap[w.Address], t.ID)
 	}
 	m.TaskWorkerMap[t.ID] = w.Address
-	m.TaskDb[t.ID] = &next
+	if m.TaskDb == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("cannot store restarted task %s: task db is nil", t.ID)
+	}
+	if err := m.TaskDb.Put(next.ID, &next); err != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("cannot store restarted task %s: %w", t.ID, err)
+	}
 	m.mu.Unlock()
 
 	newTask := task.Task{}
@@ -499,15 +567,29 @@ func (m *Manager) markFailed(id uuid.UUID, restartCount int, reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	persisted, ok := m.TaskDb[id]
-	if !ok {
-		persisted = &task.Task{ID: id}
-		m.TaskDb[id] = persisted
+	if m.TaskDb == nil {
+		log.Printf("Cannot mark task %s as failed: task db is nil\n", id)
+		return
 	}
-	persisted.State = task.Failed
-	persisted.RestartCount = restartCount
-	persisted.FailureReason = reason
-	persisted.FinishTime = time.Time{}
+
+	persisted, err := m.TaskDb.Get(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			persisted = &task.Task{ID: id}
+		} else {
+			log.Printf("Cannot mark task %s as failed: %v\n", id, err)
+			return
+		}
+	}
+
+	updated := *persisted
+	updated.State = task.Failed
+	updated.RestartCount = restartCount
+	updated.FailureReason = reason
+	updated.FinishTime = time.Time{}
+	if err := m.TaskDb.Put(id, &updated); err != nil {
+		log.Printf("Cannot mark task %s as failed: %v\n", id, err)
+	}
 }
 
 func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
@@ -516,7 +598,11 @@ func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
 	t.State = task.Failed
 	t.FailureReason = reason
 	t.FinishTime = time.Now().UTC()
-	m.TaskDb[t.ID] = &t
+	if m.TaskDb == nil {
+		log.Printf("Cannot store terminal task %s: task db is nil\n", t.ID)
+	} else if err := m.TaskDb.Put(t.ID, &t); err != nil {
+		log.Printf("Error storing terminal task %s: %v\n", t.ID, err)
+	}
 	m.mu.Unlock()
 
 	stopTask := t
