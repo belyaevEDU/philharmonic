@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// get never returns (nil, nil)
+// Get never returns (nil, nil)
 var ErrNotFound = errors.New("store: key not found")
 
 const (
