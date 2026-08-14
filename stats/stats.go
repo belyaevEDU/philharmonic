@@ -99,17 +99,6 @@ func (s *Stats) CpuUsageSplit() (idle uint64, nonIdle uint64) {
 	return idle, nonIdle
 }
 
-func (s *Stats) CpuUsage() float64 {
-	idle, nonIdle := s.CpuUsageSplit()
-	total := idle + nonIdle
-
-	if total == 0 {
-		return 0.00
-	}
-
-	return (float64(total) - float64(idle)) / float64(total)
-}
-
 // helpers for pulling info from the proc fs
 
 func GetMemoryInfo() *linux.MemInfo {

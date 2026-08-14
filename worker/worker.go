@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -16,15 +17,19 @@ import (
 )
 
 type Worker struct {
-	Name      string
-	Queue     queue.Queue
-	Db        map[uuid.UUID]*task.Task
-	Stats     *stats.Stats
-	TaskCount int
+	Name  string
+	Queue queue.Queue
+	Db    map[uuid.UUID]*task.Task
+	Stats *stats.Stats
 
 	dbMu    sync.RWMutex
 	queueMu sync.Mutex
 	statsMu sync.RWMutex
+
+	// CPU usage is a rate, so it needs two samples of the cumulative /proc/stat counters
+	prevCpuTotal uint64
+	prevCpuIdle  uint64
+	havePrevCpu  bool
 }
 
 func (w *Worker) getTasks() []*task.Task {
@@ -286,11 +291,48 @@ func (w *Worker) RunTasks() {
 func (w *Worker) CollectStats() {
 	for {
 		log.Println("Collecting stats...")
-		stats := stats.GetStats()
-		stats.TaskCount = w.TaskCount
+		fresh := stats.GetStats()
+
+		// CPU usage is measured as the work done between this sample and the
+		// previous one. /proc/stat counters are cumulative since boot, so the
+		// delta over the ~10s collection interval is the actual util
+		idle, nonIdle := fresh.CpuUsageSplit()
+		total := idle + nonIdle
+		var cpuUsage float64
+		if w.havePrevCpu && total >= w.prevCpuTotal && idle >= w.prevCpuIdle {
+			dTotal := total - w.prevCpuTotal
+			if dTotal > 0 {
+				dIdle := idle - w.prevCpuIdle
+				if dIdle > dTotal {
+					dIdle = dTotal // paranoia: keep the fraction in [0, 1] :/
+				}
+				cpuUsage = float64(dTotal-dIdle) / float64(dTotal)
+			}
+		}
+		w.prevCpuTotal = total
+		w.prevCpuIdle = idle
+		w.havePrevCpu = true
+		fresh.CpuUsage = cpuUsage
+		fresh.Cores = runtime.NumCPU()
+
+		w.dbMu.RLock()
+		var (
+			taskCount       int
+			memoryAllocated int64
+		)
+		for _, persisted := range w.Db {
+			if persisted.State != task.Running {
+				continue
+			}
+			taskCount++
+			memoryAllocated += persisted.Memory
+		}
+		w.dbMu.RUnlock()
+		fresh.TaskCount = taskCount
+		fresh.MemoryAllocated = memoryAllocated
 
 		w.statsMu.Lock()
-		w.Stats = stats
+		w.Stats = fresh
 		w.statsMu.Unlock()
 
 		time.Sleep(10 * time.Second)
