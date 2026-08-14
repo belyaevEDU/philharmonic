@@ -85,9 +85,13 @@ func NewEpvm() *Epvm {
 
 func (e *Epvm) SelectCandidateNodes(t *task.Task, nodes []*node.Node) []*node.Node {
 	var candidates []*node.Node
-	for _, node := range nodes {
-		if checkDisk(t, node.Disk-node.DiskAllocated) {
-			candidates = append(candidates, node)
+	for _, n := range nodes {
+		if _, err := n.GetStats(); err != nil {
+			log.Printf("Error fetching stats for node %s: %v", n.Name, err)
+			continue
+		}
+		if checkDisk(t, n.Snapshot().DiskFreeB) {
+			candidates = append(candidates, n)
 		}
 	}
 
