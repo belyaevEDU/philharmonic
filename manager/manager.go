@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -44,7 +45,7 @@ type Manager struct {
 	Scheduler   scheduler.Scheduler
 }
 
-func New(workers []string, schedulerType string) *Manager {
+func New(workers []string, schedulerType string) (*Manager, error) {
 	taskDb := make(map[uuid.UUID]*task.Task)
 	eventDb := make(map[uuid.UUID]*task.TaskEvent)
 	workerTaskMap := make(map[string][]uuid.UUID)
@@ -55,7 +56,10 @@ func New(workers []string, schedulerType string) *Manager {
 		workerTaskMap[worker] = []uuid.UUID{}
 
 		nAPI := fmt.Sprintf("http://%v", worker)
-		n := node.NewNode(worker, nAPI, WorkerRole)
+		n, err := node.NewNode(worker, nAPI, WorkerRole)
+		if err != nil {
+			return nil, fmt.Errorf("invalid worker %q: %w", worker, err)
+		}
 		nodes = append(nodes, n)
 	}
 
@@ -79,7 +83,7 @@ func New(workers []string, schedulerType string) *Manager {
 		checkers:      make(map[uuid.UUID]context.CancelFunc),
 		WorkerNodes:   nodes,
 		Scheduler:     s,
-	}
+	}, nil
 }
 
 func (m *Manager) SelectWorker(t *task.Task) (*node.Node, error) {
@@ -174,9 +178,9 @@ func (m *Manager) taskWorker(id uuid.UUID) string {
 	return m.TaskWorkerMap[id]
 }
 
-func (m *Manager) workerByName(name string) *node.Node {
+func (m *Manager) workerByAddress(address string) *node.Node {
 	for _, worker := range m.WorkerNodes {
-		if worker.Name == name {
+		if worker.Address == address {
 			return worker
 		}
 	}
@@ -197,7 +201,7 @@ func (m *Manager) SendWork() {
 		var w *node.Node
 		owner := m.taskWorker(t.ID)
 		if owner != "" {
-			w = m.workerByName(owner)
+			w = m.workerByAddress(owner)
 			if w == nil {
 				log.Printf("Cannot send task %s: assigned worker %q is unavailable\n", t.ID, owner)
 				return
@@ -230,7 +234,7 @@ func (m *Manager) SendWork() {
 			return
 		}
 
-		url := fmt.Sprintf(WorkerTasksURL, w.Name)
+		url := fmt.Sprintf(WorkerTasksURL, w.Address)
 		// ignoring gosec's G107 since the url is not from external input, but from an internal config
 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 		if err != nil {
@@ -261,7 +265,7 @@ func (m *Manager) SendWork() {
 				return
 			}
 			// rejection of a start/restart: marking it failed w/o term to try & restart again
-			reason := fmt.Sprintf("worker %s rejected task (%d)", w.Name, resp.StatusCode)
+			reason := fmt.Sprintf("worker %s rejected task (%d)", w.Address, resp.StatusCode)
 			if hr.Message != "" {
 				reason = fmt.Sprintf("%s: %s", reason, hr.Message)
 			}
@@ -272,10 +276,10 @@ func (m *Manager) SendWork() {
 		m.mu.Lock()
 		m.EventDb[te.ID] = &te
 		if !isStop {
-			if m.TaskWorkerMap[t.ID] != w.Name {
-				m.WorkerTaskMap[w.Name] = append(m.WorkerTaskMap[w.Name], t.ID)
+			if m.TaskWorkerMap[t.ID] != w.Address {
+				m.WorkerTaskMap[w.Address] = append(m.WorkerTaskMap[w.Address], t.ID)
 			}
-			m.TaskWorkerMap[t.ID] = w.Name
+			m.TaskWorkerMap[t.ID] = w.Address
 			m.TaskDb[t.ID] = &t
 		}
 		m.mu.Unlock()
@@ -408,7 +412,7 @@ func (m *Manager) restartTask(t task.Task) error {
 
 	var w *node.Node
 	if owner != "" {
-		w = m.workerByName(owner)
+		w = m.workerByAddress(owner)
 		if w == nil {
 			reason := fmt.Sprintf("assigned worker %q is unavailable", owner)
 			m.markFailed(t.ID, t.RestartCount+1, reason)
@@ -438,12 +442,12 @@ func (m *Manager) restartTask(t task.Task) error {
 		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
 	}
 
-	url := fmt.Sprintf(WorkerTasksURL, w.Name)
+	url := fmt.Sprintf(WorkerTasksURL, w.Address)
 	// ignoring gosec's G107 since the url is not from external input, but from an internal config
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
 		// the worker never saw the restart, so don't burn a restart slot
-		reason := fmt.Sprintf("could not reach worker %s to restart: %v", w.Name, err)
+		reason := fmt.Sprintf("could not reach worker %s to restart: %v", w.Address, err)
 		m.markFailed(t.ID, t.RestartCount, reason)
 		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
 	}
@@ -461,7 +465,7 @@ func (m *Manager) restartTask(t task.Task) error {
 		}
 		// the worker refused the restart, so burn a slot and
 		// let restartFailedTasks bound the retries via MaxRestarts
-		reason := fmt.Sprintf("worker %s rejected restart (%d)", w.Name, resp.StatusCode)
+		reason := fmt.Sprintf("worker %s rejected restart (%d)", w.Address, resp.StatusCode)
 		if hr.Message != "" {
 			reason = fmt.Sprintf("%s: %s", reason, hr.Message)
 		}
@@ -470,10 +474,10 @@ func (m *Manager) restartTask(t task.Task) error {
 	}
 
 	m.mu.Lock()
-	if m.TaskWorkerMap[t.ID] != w.Name {
-		m.WorkerTaskMap[w.Name] = append(m.WorkerTaskMap[w.Name], t.ID)
+	if m.TaskWorkerMap[t.ID] != w.Address {
+		m.WorkerTaskMap[w.Address] = append(m.WorkerTaskMap[w.Address], t.ID)
 	}
-	m.TaskWorkerMap[t.ID] = w.Name
+	m.TaskWorkerMap[t.ID] = w.Address
 	m.TaskDb[t.ID] = &next
 	m.mu.Unlock()
 
@@ -530,7 +534,7 @@ func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
 		return
 	}
 
-	url := fmt.Sprintf("http://%s/tasks", w)
+	url := fmt.Sprintf(WorkerTasksURL, w)
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
 		log.Printf("Error connecting to %v: %v", w, err)
@@ -551,7 +555,10 @@ func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
 func (m *Manager) checkTaskHealth(ctx context.Context, t task.Task, w string) error {
 	hc := t.HealthCheck
 
-	host := strings.SplitN(w, ":", 2)[0]
+	host, _, err := net.SplitHostPort(w)
+	if err != nil {
+		return fmt.Errorf("invalid worker address %q: %w", w, err)
+	}
 	hostPort := hostPortFor(t.HostPorts, hc.Port)
 	if hostPort == 0 {
 		return fmt.Errorf("error: task %s has no published host port for container port %d", t.ID, hc.Port)
@@ -563,7 +570,7 @@ func (m *Manager) checkTaskHealth(ctx context.Context, t task.Task, w string) er
 		if path == "" {
 			path = "/"
 		}
-		url := fmt.Sprintf("http://%s:%d%s", host, hostPort, path)
+		url := fmt.Sprintf("http://%s%s", net.JoinHostPort(host, strconv.Itoa(hostPort)), path)
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
@@ -596,7 +603,7 @@ func (m *Manager) checkTaskHealth(ctx context.Context, t task.Task, w string) er
 		return nil
 
 	case task.HealthCheckTCP:
-		addr := fmt.Sprintf("%s:%d", host, hostPort)
+		addr := net.JoinHostPort(host, strconv.Itoa(hostPort))
 
 		var d net.Dialer
 		conn, err := d.DialContext(ctx, "tcp", addr)
