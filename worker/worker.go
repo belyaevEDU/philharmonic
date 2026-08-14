@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -15,6 +16,12 @@ import (
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
+)
+
+const (
+	DbFilename   = "%s_tasks.db"
+	DbFilemode   = os.FileMode(0600)
+	DbBucketName = "tasks"
 )
 
 type Worker struct {
@@ -35,12 +42,21 @@ type Worker struct {
 
 func New(name, dbType string) (*Worker, error) {
 	var db store.Store[task.Task]
+	var err error
 	switch dbType {
 	case store.MemoryType:
 		db = store.NewInMemoryTaskStore()
+	case store.BoltType:
+		filename := fmt.Sprintf(DbFilename, name)
+		db, err = store.NewBoltTaskStore(filename, DbFilemode, DbBucketName)
 	default:
 		return nil, fmt.Errorf("unknown db type %q", dbType)
 	}
+
+	if err != nil {
+		return nil, err
+	}
+
 	return &Worker{
 		Name:  name,
 		Queue: *queue.New(),
