@@ -31,38 +31,65 @@ func GetStats() *Stats {
 // ram-related helpers
 
 func (s *Stats) MemTotalKb() uint64 {
+	if s.MemStats == nil {
+		return 0
+	}
 	return s.MemStats.MemTotal
 }
 
 func (s *Stats) MemAvailableKb() uint64 {
+	if s.MemStats == nil {
+		return 0
+	}
 	return s.MemStats.MemAvailable
 }
 
 func (s *Stats) MemUsedKb() uint64 {
-	return s.MemTotalKb() - s.MemAvailableKb()
+	total := s.MemTotalKb()
+	avail := s.MemAvailableKb()
+	if avail >= total {
+		return 0
+	}
+	return total - avail
 }
 
 func (s *Stats) MemUsedPercent() uint64 {
-	return s.MemAvailableKb() / s.MemTotalKb()
+	total := s.MemTotalKb()
+	if total == 0 {
+		return 0
+	}
+	return s.MemAvailableKb() / total
 }
 
 // disk-related helpers
 
 func (s *Stats) DiskTotal() uint64 {
+	if s.DiskStats == nil {
+		return 0
+	}
 	return s.DiskStats.All
 }
 
 func (s *Stats) DiskFree() uint64 {
+	if s.DiskStats == nil {
+		return 0
+	}
 	return s.DiskStats.Free
 }
 
 func (s *Stats) DiskUsed() uint64 {
+	if s.DiskStats == nil {
+		return 0
+	}
 	return s.DiskStats.Used
 }
 
 // cpu-related helpers
 
 func (s *Stats) CpuUsageSplit() (idle uint64, nonIdle uint64) {
+	if s.CpuStats == nil {
+		return 0, 0
+	}
 	// https://stackoverflow.com/questions/23367857/accurate-calculation-of-cpu-usage-given-in-percentage-in-linux
 	// lord almighty...
 	idle = s.CpuStats.Idle + s.CpuStats.IOWait
