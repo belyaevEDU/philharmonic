@@ -57,9 +57,9 @@ func (r *RoundRobin) Score(t *task.Task, nodes []*node.Node) map[string]float64 
 
 	for i, node := range nodes {
 		if i == newWorker {
-			nodeScores[node.Name] = chosen
+			nodeScores[node.Address] = chosen
 		} else {
-			nodeScores[node.Name] = skipped
+			nodeScores[node.Address] = skipped
 		}
 	}
 
@@ -69,7 +69,7 @@ func (r *RoundRobin) Score(t *task.Task, nodes []*node.Node) map[string]float64 
 func (r *RoundRobin) Pick(scores map[string]float64, candidates []*node.Node) *node.Node {
 	var best *node.Node
 	for _, n := range candidates {
-		if best == nil || scores[n.Name] < scores[best.Name] {
+		if best == nil || scores[n.Address] < scores[best.Address] {
 			best = n
 		}
 	}
@@ -90,7 +90,7 @@ func (e *Epvm) SelectCandidateNodes(t *task.Task, nodes []*node.Node) []*node.No
 	var candidates []*node.Node
 	for _, n := range nodes {
 		if _, err := n.GetStats(); err != nil {
-			log.Printf("Error fetching stats for node %s: %v", n.Name, err)
+			log.Printf("Error fetching stats for node %s: %v", n.Address, err)
 			continue
 		}
 		if checkDisk(t, n.Snapshot().DiskFreeB) {
@@ -109,7 +109,7 @@ func (e *Epvm) Score(t *task.Task, nodes []*node.Node) map[string]float64 {
 
 		if snap.MemoryTotalKB <= 0 {
 			// unknown capacity, so can't reason about cost, skip
-			nodeScores[n.Name] = math.MaxFloat64
+			nodeScores[n.Address] = math.MaxFloat64
 			continue
 		}
 
@@ -139,7 +139,7 @@ func (e *Epvm) Score(t *task.Task, nodes []*node.Node) map[string]float64 {
 			math.Pow(lieb, cpuLoad) -
 			math.Pow(lieb, jobsNow/float64(epvmMaxJobs))
 
-		nodeScores[n.Name] = memCost + cpuCost
+		nodeScores[n.Address] = memCost + cpuCost
 	}
 
 	return nodeScores
@@ -148,11 +148,11 @@ func (e *Epvm) Score(t *task.Task, nodes []*node.Node) map[string]float64 {
 func (e *Epvm) Pick(scores map[string]float64, candidates []*node.Node) *node.Node {
 	var best *node.Node
 	for _, n := range candidates {
-		score := scores[n.Name]
+		score := scores[n.Address]
 		if score == math.MaxFloat64 {
 			continue
 		}
-		if best == nil || score < scores[best.Name] {
+		if best == nil || score < scores[best.Address] {
 			best = n
 		}
 	}
