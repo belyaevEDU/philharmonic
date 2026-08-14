@@ -20,7 +20,7 @@ type TaskStore struct {
 
 var _ Store[task.Task] = (*TaskStore)(nil)
 
-func NewTaskStore(file string, mode os.FileMode, bucket string) (*TaskStore, error) {
+func NewBoltTaskStore(file string, mode os.FileMode, bucket string) (*TaskStore, error) {
 	db, err := bolt.Open(file, mode, nil)
 	if err != nil {
 		return nil, fmt.Errorf("unable to open %s", file)
@@ -148,7 +148,7 @@ type TaskEventStore struct {
 
 var _ Store[task.TaskEvent] = (*TaskEventStore)(nil)
 
-func NewTaskEventStore(file string, mode os.FileMode, bucket string) (*TaskEventStore, error) {
+func NewBoltTaskEventStore(file string, mode os.FileMode, bucket string) (*TaskEventStore, error) {
 	db, err := bolt.Open(file, mode, nil)
 	if err != nil {
 		return nil, fmt.Errorf("unable to open %s", file)
