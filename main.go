@@ -8,10 +8,8 @@ import (
 	"time"
 
 	"github.com/belyaevedu/philharmonic/manager"
-	"github.com/belyaevedu/philharmonic/task"
+	"github.com/belyaevedu/philharmonic/store"
 	"github.com/belyaevedu/philharmonic/worker"
-	"github.com/golang-collections/collections/queue"
-	"github.com/google/uuid"
 )
 
 func main() {
@@ -30,25 +28,26 @@ func main() {
 	}
 
 	fmt.Println("starting workers")
-	w1 := worker.Worker{
-		Queue: *queue.New(),
-		Db:    make(map[uuid.UUID]*task.Task),
+	w1, err := worker.New("", store.MemoryType)
+	if err != nil {
+		fmt.Printf("error creating worker: %v\n", err)
+		return
 	}
-	wapi1 := worker.Api{Address: whost, Port: wport, Worker: &w1}
-
-	w2 := worker.Worker{
-		Queue: *queue.New(),
-		Db:    make(map[uuid.UUID]*task.Task),
+	w2, err := worker.New("", store.MemoryType)
+	if err != nil {
+		fmt.Printf("error creating worker: %v\n", err)
+		return
 	}
-	wapi2 := worker.Api{Address: whost, Port: wport + 1, Worker: &w2}
-
-	w3 := worker.Worker{
-		Queue: *queue.New(),
-		Db:    make(map[uuid.UUID]*task.Task),
+	w3, err := worker.New("", store.MemoryType)
+	if err != nil {
+		fmt.Printf("error creating worker: %v\n", err)
+		return
 	}
-	wapi3 := worker.Api{Address: whost, Port: wport + 2, Worker: &w3}
+	wapi1 := worker.Api{Address: whost, Port: wport, Worker: w1}
+	wapi2 := worker.Api{Address: whost, Port: wport + 1, Worker: w2}
+	wapi3 := worker.Api{Address: whost, Port: wport + 2, Worker: w3}
 
-	for _, w := range []*worker.Worker{&w1, &w2, &w3} {
+	for _, w := range []*worker.Worker{w1, w2, w3} {
 		go w.RunTasks()
 		go w.CollectStats()
 		go w.UpdateTasks()
@@ -73,7 +72,7 @@ func main() {
 		net.JoinHostPort(whost, strconv.Itoa(wport+1)),
 		net.JoinHostPort(whost, strconv.Itoa(wport+2)),
 	}
-	m, err := manager.New(workers, "")
+	m, err := manager.New(workers, "", store.MemoryType)
 	if err != nil {
 		fmt.Printf("invalid worker configuration: %v\n", err)
 		return
