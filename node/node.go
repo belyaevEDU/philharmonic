@@ -6,7 +6,10 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"sync"
 
 	"github.com/belyaevedu/philharmonic/stats"
@@ -19,7 +22,7 @@ const (
 )
 
 type Node struct {
-	Name            string // ip:port
+	Address         string // host:port
 	Api             string
 	Cores           int   // logical CPUs reported by the worker
 	Memory          int64 // total memory in KB
@@ -31,12 +34,41 @@ type Node struct {
 	mu sync.Mutex
 }
 
-func NewNode(name, api, role string) *Node {
-	return &Node{
-		Name: name,
-		Api:  api,
-		Role: role,
+func NewNode(address, api, role string) (*Node, error) {
+	if err := validateAddress(address); err != nil {
+		return nil, fmt.Errorf("invalid node address %q: %w", address, err)
 	}
+
+	return &Node{
+		Address: address,
+		Api:     api,
+		Role:    role,
+	}, nil
+}
+
+func validateAddress(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("must be a host:port endpoint: %w", err)
+	}
+	if host == "" {
+		return fmt.Errorf("host must not be empty")
+	}
+
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return fmt.Errorf("port must be an integer from 1 to 65535")
+	}
+
+	// port still can include a path if given.
+	// ensuring the value remains a host, rather than becoming a path or query
+	// component when it is interpolated into an HTTP URL
+	endpoint, err := url.Parse("http://" + address)
+	if err != nil || endpoint.Host != address {
+		return fmt.Errorf("must be a valid host:port endpoint")
+	}
+
+	return nil
 }
 
 func (n *Node) GetStats() (*stats.Stats, error) {
