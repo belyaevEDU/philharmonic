@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"time"
@@ -68,11 +69,15 @@ func main() {
 	fmt.Println("Starting manager")
 
 	workers := []string{
-		fmt.Sprintf("%s:%d", whost, wport),
-		fmt.Sprintf("%s:%d", whost, wport+1),
-		fmt.Sprintf("%s:%d", whost, wport+2),
+		net.JoinHostPort(whost, strconv.Itoa(wport)),
+		net.JoinHostPort(whost, strconv.Itoa(wport+1)),
+		net.JoinHostPort(whost, strconv.Itoa(wport+2)),
 	}
-	m := manager.New(workers, "")
+	m, err := manager.New(workers, "")
+	if err != nil {
+		fmt.Printf("invalid worker configuration: %v\n", err)
+		return
+	}
 	mapi := manager.Api{Address: mhost, Port: mport, Manager: m}
 
 	go m.ProcessTasks()
