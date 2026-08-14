@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +30,12 @@ const (
 	WorkerRole     = "worker"
 
 	MaxRestarts = 3
+
+	DbTasksFile   = "tasks.db"
+	DbEventsFile  = "events.db"
+	DbFilemode    = os.FileMode(0600)
+	DbTaskBucket  = "tasks"
+	DbEventBucket = "events"
 )
 
 type Manager struct {
@@ -85,12 +92,20 @@ func New(workers []string, schedulerType, dbType string) (*Manager, error) {
 
 	var ts store.Store[task.Task]
 	var es store.Store[task.TaskEvent]
+	var err error
 	switch dbType {
 	case store.MemoryType:
 		ts = store.NewInMemoryTaskStore()
 		es = store.NewInMemoryTaskEventStore()
+	case store.BoltType:
+		ts, err = store.NewBoltTaskStore(DbTasksFile, DbFilemode, DbTaskBucket)
+		es, err = store.NewBoltTaskEventStore(DbEventsFile, DbFilemode, DbEventBucket)
 	default:
 		return nil, errors.New("unknown db type given")
+	}
+
+	if err != nil {
+		return nil, err
 	}
 
 	m.TaskDb = ts
