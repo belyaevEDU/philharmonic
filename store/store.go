@@ -11,6 +11,7 @@ var ErrNotFound = errors.New("store: key not found")
 
 const (
 	MemoryType = "memory"
+	BoltType   = "bolt"
 )
 
 type Store[T any] interface {
