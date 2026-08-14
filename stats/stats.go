@@ -1,4 +1,4 @@
-package worker
+package stats
 
 import (
 	"log"
@@ -11,7 +11,12 @@ type Stats struct {
 	DiskStats *linux.Disk
 	CpuStats  *linux.CPUStat
 	LoadStats *linux.LoadAvg
-	TaskCount int
+
+	// brought these out into their own fields since they are reported by the worker
+	TaskCount       int
+	CpuUsage        float64 // [0, 1]
+	Cores           int
+	MemoryAllocated int64 // bytes reserved by the worker's running tasks
 }
 
 func GetStats() *Stats {
@@ -26,50 +31,72 @@ func GetStats() *Stats {
 // ram-related helpers
 
 func (s *Stats) MemTotalKb() uint64 {
+	if s.MemStats == nil {
+		return 0
+	}
 	return s.MemStats.MemTotal
 }
 
 func (s *Stats) MemAvailableKb() uint64 {
+	if s.MemStats == nil {
+		return 0
+	}
 	return s.MemStats.MemAvailable
 }
 
 func (s *Stats) MemUsedKb() uint64 {
-	return s.MemTotalKb() - s.MemAvailableKb()
+	total := s.MemTotalKb()
+	avail := s.MemAvailableKb()
+	if avail >= total {
+		return 0
+	}
+	return total - avail
 }
 
 func (s *Stats) MemUsedPercent() uint64 {
-	return s.MemAvailableKb() / s.MemTotalKb()
+	total := s.MemTotalKb()
+	if total == 0 {
+		return 0
+	}
+	return s.MemAvailableKb() / total
 }
 
 // disk-related helpers
 
 func (s *Stats) DiskTotal() uint64 {
+	if s.DiskStats == nil {
+		return 0
+	}
 	return s.DiskStats.All
 }
 
 func (s *Stats) DiskFree() uint64 {
+	if s.DiskStats == nil {
+		return 0
+	}
 	return s.DiskStats.Free
 }
 
 func (s *Stats) DiskUsed() uint64 {
+	if s.DiskStats == nil {
+		return 0
+	}
 	return s.DiskStats.Used
 }
 
 // cpu-related helpers
 
-func (s *Stats) CpuUsage() float64 {
+func (s *Stats) CpuUsageSplit() (idle uint64, nonIdle uint64) {
+	if s.CpuStats == nil {
+		return 0, 0
+	}
 	// https://stackoverflow.com/questions/23367857/accurate-calculation-of-cpu-usage-given-in-percentage-in-linux
 	// lord almighty...
-	idle := s.CpuStats.Idle + s.CpuStats.IOWait
-	nonIdle := s.CpuStats.User + s.CpuStats.Nice + s.CpuStats.System +
+	idle = s.CpuStats.Idle + s.CpuStats.IOWait
+	nonIdle = s.CpuStats.User + s.CpuStats.Nice + s.CpuStats.System +
 		s.CpuStats.IRQ + s.CpuStats.SoftIRQ + s.CpuStats.Steal
-	total := idle + nonIdle
 
-	if total == 0 {
-		return 0.00
-	}
-
-	return (float64(total) - float64(idle)) / float64(total)
+	return idle, nonIdle
 }
 
 // helpers for pulling info from the proc fs

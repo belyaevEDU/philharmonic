@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/belyaevedu/philharmonic/stats"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
@@ -15,14 +17,19 @@ import (
 )
 
 type Worker struct {
-	Name      string
-	Queue     queue.Queue
-	Db        map[uuid.UUID]*task.Task
-	Stats     *Stats
-	TaskCount int
+	Name  string
+	Queue queue.Queue
+	Db    map[uuid.UUID]*task.Task
+	Stats *stats.Stats
 
 	dbMu    sync.RWMutex
 	queueMu sync.Mutex
+	statsMu sync.RWMutex
+
+	// CPU usage is a rate, so it needs two samples of the cumulative /proc/stat counters
+	prevCpuTotal uint64
+	prevCpuIdle  uint64
+	havePrevCpu  bool
 }
 
 func (w *Worker) getTasks() []*task.Task {
@@ -119,6 +126,20 @@ func (w *Worker) runTask() task.DockerResult {
 	w.dbMu.Lock()
 	taskPersisted := w.Db[taskQueued.ID]
 	if taskPersisted == nil {
+		// w.Db has to store the CURRENT state of the container
+		// so we update it if its new and scheduled
+		// all other changes will be stored by startTask and stopTask down the line
+
+		if taskQueued.State != task.Scheduled {
+			w.dbMu.Unlock()
+			return task.DockerResult{
+				Error: fmt.Errorf(
+					"task %s is not known to this worker (state %v); refusing to process",
+					taskQueued.ID.String(), taskQueued.State,
+				),
+			}
+		}
+
 		persisted := taskQueued
 		taskPersisted = &persisted
 		w.Db[taskQueued.ID] = taskPersisted
@@ -270,8 +291,50 @@ func (w *Worker) RunTasks() {
 func (w *Worker) CollectStats() {
 	for {
 		log.Println("Collecting stats...")
-		w.Stats = GetStats()
-		w.Stats.TaskCount = w.TaskCount
+		fresh := stats.GetStats()
+
+		// CPU usage is measured as the work done between this sample and the
+		// previous one. /proc/stat counters are cumulative since boot, so the
+		// delta over the ~10s collection interval is the actual util
+		idle, nonIdle := fresh.CpuUsageSplit()
+		total := idle + nonIdle
+		var cpuUsage float64
+		if w.havePrevCpu && total >= w.prevCpuTotal && idle >= w.prevCpuIdle {
+			dTotal := total - w.prevCpuTotal
+			if dTotal > 0 {
+				dIdle := idle - w.prevCpuIdle
+				if dIdle > dTotal {
+					dIdle = dTotal // paranoia: keep the fraction in [0, 1] :/
+				}
+				cpuUsage = float64(dTotal-dIdle) / float64(dTotal)
+			}
+		}
+		w.prevCpuTotal = total
+		w.prevCpuIdle = idle
+		w.havePrevCpu = true
+		fresh.CpuUsage = cpuUsage
+		fresh.Cores = runtime.NumCPU()
+
+		w.dbMu.RLock()
+		var (
+			taskCount       int
+			memoryAllocated int64
+		)
+		for _, persisted := range w.Db {
+			if persisted.State != task.Running {
+				continue
+			}
+			taskCount++
+			memoryAllocated += persisted.Memory
+		}
+		w.dbMu.RUnlock()
+		fresh.TaskCount = taskCount
+		fresh.MemoryAllocated = memoryAllocated
+
+		w.statsMu.Lock()
+		w.Stats = fresh
+		w.statsMu.Unlock()
+
 		time.Sleep(10 * time.Second)
 	}
 }

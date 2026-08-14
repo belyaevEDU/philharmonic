@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"time"
@@ -28,30 +29,55 @@ func main() {
 		return
 	}
 
-	fmt.Println("starting worker")
-	w := worker.Worker{
+	fmt.Println("starting workers")
+	w1 := worker.Worker{
 		Queue: *queue.New(),
 		Db:    make(map[uuid.UUID]*task.Task),
 	}
-	api := worker.Api{Address: whost, Port: wport, Worker: &w}
+	wapi1 := worker.Api{Address: whost, Port: wport, Worker: &w1}
 
-	go w.RunTasks()
-	go w.CollectStats()
-	go w.UpdateTasks()
-	go func() {
-		err = api.Start()
-		if err != nil {
-			fmt.Printf("Error raised when starting the http server: %v", err)
-			os.Exit(1)
-		}
-	}()
+	w2 := worker.Worker{
+		Queue: *queue.New(),
+		Db:    make(map[uuid.UUID]*task.Task),
+	}
+	wapi2 := worker.Api{Address: whost, Port: wport + 1, Worker: &w2}
+
+	w3 := worker.Worker{
+		Queue: *queue.New(),
+		Db:    make(map[uuid.UUID]*task.Task),
+	}
+	wapi3 := worker.Api{Address: whost, Port: wport + 2, Worker: &w3}
+
+	for _, w := range []*worker.Worker{&w1, &w2, &w3} {
+		go w.RunTasks()
+		go w.CollectStats()
+		go w.UpdateTasks()
+	}
+
+	for _, api := range []*worker.Api{&wapi1, &wapi2, &wapi3} {
+		go func(api *worker.Api) {
+			err := api.Start()
+			if err != nil {
+				fmt.Printf("Error raised when starting the http server: %v", err)
+				os.Exit(1)
+			}
+		}(api)
+	}
 
 	time.Sleep(2 * time.Second)
 
 	fmt.Println("Starting manager")
 
-	workers := []string{fmt.Sprintf("%s:%d", whost, wport)}
-	m := manager.New(workers)
+	workers := []string{
+		net.JoinHostPort(whost, strconv.Itoa(wport)),
+		net.JoinHostPort(whost, strconv.Itoa(wport+1)),
+		net.JoinHostPort(whost, strconv.Itoa(wport+2)),
+	}
+	m, err := manager.New(workers, "")
+	if err != nil {
+		fmt.Printf("invalid worker configuration: %v\n", err)
+		return
+	}
 	mapi := manager.Api{Address: mhost, Port: mport, Manager: m}
 
 	go m.ProcessTasks()

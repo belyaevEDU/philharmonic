@@ -2,7 +2,9 @@ package worker
 
 import (
 	"fmt"
+	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -13,11 +15,6 @@ type Api struct {
 	Port    int
 	Worker  *Worker
 	Router  *chi.Mux
-}
-
-type HTTPResponse struct {
-	HTTPStatusCode int
-	Message        string
 }
 
 func (a *Api) initRouter() {
@@ -39,7 +36,7 @@ func (a *Api) Start() error {
 	a.initRouter()
 
 	server := http.Server{
-		Addr:              fmt.Sprintf("%s:%d", a.Address, a.Port),
+		Addr:              net.JoinHostPort(a.Address, strconv.Itoa(a.Port)),
 		Handler:           a.Router,
 		ReadHeaderTimeout: time.Second * 5,
 	}

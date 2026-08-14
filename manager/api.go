@@ -2,7 +2,9 @@ package manager
 
 import (
 	"fmt"
+	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -35,7 +37,7 @@ func (a *Api) Start() error {
 	a.initRouter()
 
 	server := http.Server{
-		Addr:              fmt.Sprintf("%s:%d", a.Address, a.Port),
+		Addr:              net.JoinHostPort(a.Address, strconv.Itoa(a.Port)),
 		Handler:           a.Router,
 		ReadHeaderTimeout: time.Second * 5,
 	}

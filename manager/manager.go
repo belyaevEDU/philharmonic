@@ -9,19 +9,22 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/belyaevedu/philharmonic/handlers"
+	"github.com/belyaevedu/philharmonic/node"
+	"github.com/belyaevedu/philharmonic/scheduler"
 	"github.com/belyaevedu/philharmonic/task"
-	"github.com/belyaevedu/philharmonic/worker"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
 )
 
 const (
 	WorkerTasksURL = "http://%s/tasks"
+	WorkerRole     = "worker"
 
 	MaxRestarts = 3
 )
@@ -37,16 +40,37 @@ type Manager struct {
 	mu            sync.RWMutex
 	pendingMu     sync.Mutex
 	checkers      map[uuid.UUID]context.CancelFunc
+
+	WorkerNodes []*node.Node
+	Scheduler   scheduler.Scheduler
 }
 
-func New(workers []string) *Manager {
+func New(workers []string, schedulerType string) (*Manager, error) {
 	taskDb := make(map[uuid.UUID]*task.Task)
 	eventDb := make(map[uuid.UUID]*task.TaskEvent)
 	workerTaskMap := make(map[string][]uuid.UUID)
 	taskWorkerMap := make(map[uuid.UUID]string)
 
+	var nodes []*node.Node
 	for _, worker := range workers {
 		workerTaskMap[worker] = []uuid.UUID{}
+
+		nAPI := fmt.Sprintf("http://%v", worker)
+		n, err := node.NewNode(worker, nAPI, WorkerRole)
+		if err != nil {
+			return nil, fmt.Errorf("invalid worker %q: %w", worker, err)
+		}
+		nodes = append(nodes, n)
+	}
+
+	var s scheduler.Scheduler
+	switch schedulerType {
+	case scheduler.RoundRobinDefaultName:
+		s = scheduler.NewRoundRobin()
+	case scheduler.EpvmDefaultName:
+		s = scheduler.NewEpvm()
+	default:
+		s = scheduler.NewRoundRobin()
 	}
 
 	return &Manager{
@@ -57,22 +81,24 @@ func New(workers []string) *Manager {
 		WorkerTaskMap: workerTaskMap,
 		TaskWorkerMap: taskWorkerMap,
 		checkers:      make(map[uuid.UUID]context.CancelFunc),
-	}
+		WorkerNodes:   nodes,
+		Scheduler:     s,
+	}, nil
 }
 
-func (m *Manager) SelectWorker() string {
-	// naive round-robin
-	// e-pvm later
-
-	var newWorker int
-	if m.LastWorker+1 < len(m.Workers) {
-		newWorker = m.LastWorker + 1
-	} else {
-		m.LastWorker = 0
+func (m *Manager) SelectWorker(t *task.Task) (*node.Node, error) {
+	candidates := m.Scheduler.SelectCandidateNodes(t, m.WorkerNodes)
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no available candidates match resource requests for task %s", t.ID)
 	}
-	m.LastWorker = newWorker
 
-	return m.Workers[newWorker]
+	scores := m.Scheduler.Score(t, candidates)
+	selectedNode := m.Scheduler.Pick(scores, candidates)
+	if selectedNode == nil {
+		return nil, fmt.Errorf("no candidate able to host task %s (all unscoreable)", t.ID)
+	}
+
+	return selectedNode, nil
 }
 
 func (m *Manager) AddTask(te task.TaskEvent) error {
@@ -152,9 +178,17 @@ func (m *Manager) taskWorker(id uuid.UUID) string {
 	return m.TaskWorkerMap[id]
 }
 
+func (m *Manager) workerByAddress(address string) *node.Node {
+	for _, worker := range m.WorkerNodes {
+		if worker.Address == address {
+			return worker
+		}
+	}
+	return nil
+}
+
 func (m *Manager) SendWork() {
 	if m.pendingLen() > 0 {
-		w := m.SelectWorker()
 		te, ok := m.dequeuePending()
 		if !ok {
 			log.Println("A non-task.TaskEvent object somehow got in the queue")
@@ -163,6 +197,27 @@ func (m *Manager) SendWork() {
 
 		t := te.Task
 		isStop := te.State == task.Completed || t.State == task.Completed
+
+		var w *node.Node
+		owner := m.taskWorker(t.ID)
+		if owner != "" {
+			w = m.workerByAddress(owner)
+			if w == nil {
+				log.Printf("Cannot send task %s: assigned worker %q is unavailable\n", t.ID, owner)
+				return
+			}
+		} else if isStop {
+			log.Printf("Cannot stop task %s: no worker owns it\n", t.ID)
+			return
+		} else {
+			var err error
+			w, err = m.SelectWorker(&t)
+			if err != nil {
+				log.Printf("Error selecting worker for task %s: %v\n", t.ID, err)
+				return
+			}
+		}
+
 		if !isStop {
 			t.State = task.Scheduled
 			te.Task = t
@@ -173,21 +228,13 @@ func (m *Manager) SendWork() {
 		}
 		log.Printf("Pulled %v off pending queue\n", t)
 
-		m.mu.Lock()
-		m.EventDb[te.ID] = &te
-		if !isStop {
-			m.WorkerTaskMap[w] = append(m.WorkerTaskMap[w], t.ID)
-			m.TaskWorkerMap[t.ID] = w
-			m.TaskDb[t.ID] = &t
-		}
-		m.mu.Unlock()
-
 		data, err := json.Marshal(te)
 		if err != nil {
 			log.Printf("Error raised when marshalling task object %v: %v\n", t, err)
+			return
 		}
 
-		url := fmt.Sprintf(WorkerTasksURL, w)
+		url := fmt.Sprintf(WorkerTasksURL, w.Address)
 		// ignoring gosec's G107 since the url is not from external input, but from an internal config
 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 		if err != nil {
@@ -205,15 +252,37 @@ func (m *Manager) SendWork() {
 		d := json.NewDecoder(resp.Body)
 		if resp.StatusCode != http.StatusCreated {
 			hr := handlers.HTTPResponse{}
-			err := d.Decode(&hr)
-			if err != nil {
+			if err := d.Decode(&hr); err != nil {
 				fmt.Printf("Error decoding response: %v\n", err)
+			} else {
+				log.Printf("Response error (%d): %s", hr.HTTPStatusCode, hr.Message)
+			}
+			if isStop {
+				// a rejected stop leaves the task running.
+				// we neither requeue (would loop forever against the fixed owning worker)
+				// nor mark Failed (would make restartFailedTasks try to *restart* a task
+				// the user asked to stop). just log it and hope for the best
 				return
 			}
-
-			log.Printf("Response error (%d): %s", hr.HTTPStatusCode, hr.Message)
+			// rejection of a start/restart: marking it failed w/o term to try & restart again
+			reason := fmt.Sprintf("worker %s rejected task (%d)", w.Address, resp.StatusCode)
+			if hr.Message != "" {
+				reason = fmt.Sprintf("%s: %s", reason, hr.Message)
+			}
+			m.markFailed(t.ID, t.RestartCount+1, reason)
 			return
 		}
+
+		m.mu.Lock()
+		m.EventDb[te.ID] = &te
+		if !isStop {
+			if m.TaskWorkerMap[t.ID] != w.Address {
+				m.WorkerTaskMap[w.Address] = append(m.WorkerTaskMap[w.Address], t.ID)
+			}
+			m.TaskWorkerMap[t.ID] = w.Address
+			m.TaskDb[t.ID] = &t
+		}
+		m.mu.Unlock()
 
 		// the worker api returns the json of the newly created task
 		// in response to POST /tasks
@@ -330,59 +399,115 @@ func (m *Manager) DoHealthChecks() {
 }
 
 func (m *Manager) restartTask(t task.Task) error {
-	m.mu.Lock()
-	w := m.TaskWorkerMap[t.ID]
-	t.State = task.Scheduled
-	t.RestartCount++
-	t.FailureReason = ""
-	t.StartTime = time.Time{}
-	t.FinishTime = time.Time{}
-	m.TaskDb[t.ID] = &t
-	m.mu.Unlock()
+	// restartTask schedules a restart of t on its owning worker
+	// for a task with no owner re-schedules it via the scheduler
+	owner := m.taskWorker(t.ID)
+
+	next := t
+	next.State = task.Scheduled
+	next.RestartCount = t.RestartCount + 1
+	next.FailureReason = ""
+	next.StartTime = time.Time{}
+	next.FinishTime = time.Time{}
+
+	var w *node.Node
+	if owner != "" {
+		w = m.workerByAddress(owner)
+		if w == nil {
+			reason := fmt.Sprintf("assigned worker %q is unavailable", owner)
+			m.markFailed(t.ID, t.RestartCount+1, reason)
+			return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
+		}
+	} else {
+		var err error
+		w, err = m.SelectWorker(&next)
+		if err != nil {
+			reason := fmt.Sprintf("no available worker to restart: %v", err)
+			m.markFailed(t.ID, t.RestartCount+1, reason)
+			return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
+		}
+	}
 
 	te := task.TaskEvent{
 		ID:        uuid.New(),
 		State:     task.Scheduled,
 		Timestamp: time.Now().UTC(),
-		Task:      t,
+		Task:      next,
 	}
 
 	data, err := json.Marshal(te)
 	if err != nil {
-		return fmt.Errorf("unable to marshal task object %s: %w", t.ID, err)
+		reason := fmt.Sprintf("unable to marshal restart event: %v", err)
+		m.markFailed(t.ID, t.RestartCount+1, reason)
+		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
 	}
 
-	url := fmt.Sprintf("http://%s/tasks", w)
+	url := fmt.Sprintf(WorkerTasksURL, w.Address)
+	// ignoring gosec's G107 since the url is not from external input, but from an internal config
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
-		m.enqueuePending(te)
-		return fmt.Errorf("error POSTing to %s: %w", w, err)
+		// the worker never saw the restart, so don't burn a restart slot
+		reason := fmt.Sprintf("could not reach worker %s to restart: %v", w.Address, err)
+		m.markFailed(t.ID, t.RestartCount, reason)
+		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
 	}
 	defer func() {
-		err = resp.Body.Close()
-		if err != nil {
-			log.Printf("Error closing response body: %v", err)
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Error closing response body: %v\n", err)
 		}
 	}()
 
 	d := json.NewDecoder(resp.Body)
 	if resp.StatusCode != http.StatusCreated {
-		hr := worker.HTTPResponse{}
-		err := d.Decode(&hr)
-		if err != nil {
-			return fmt.Errorf("error decoding response: %w", err)
+		hr := handlers.HTTPResponse{}
+		if err := d.Decode(&hr); err != nil {
+			log.Printf("Error decoding rejection response: %v\n", err)
 		}
-		return fmt.Errorf("response error (%d): %s", hr.HTTPStatusCode, hr.Message)
+		// the worker refused the restart, so burn a slot and
+		// let restartFailedTasks bound the retries via MaxRestarts
+		reason := fmt.Sprintf("worker %s rejected restart (%d)", w.Address, resp.StatusCode)
+		if hr.Message != "" {
+			reason = fmt.Sprintf("%s: %s", reason, hr.Message)
+		}
+		m.markFailed(t.ID, t.RestartCount+1, reason)
+		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
 	}
 
+	m.mu.Lock()
+	if m.TaskWorkerMap[t.ID] != w.Address {
+		m.WorkerTaskMap[w.Address] = append(m.WorkerTaskMap[w.Address], t.ID)
+	}
+	m.TaskWorkerMap[t.ID] = w.Address
+	m.TaskDb[t.ID] = &next
+	m.mu.Unlock()
+
 	newTask := task.Task{}
-	err = d.Decode(&newTask)
-	if err != nil {
-		return fmt.Errorf("error decoding response: %w", err)
+	if err := d.Decode(&newTask); err != nil {
+		log.Printf("Error decoding restart response: %v\n", err)
+		// ownership already commited via 201, so we dont really care about a json decoding error
+		return nil
 	}
 
 	log.Printf("Task restarted: %#v\n", newTask)
 	return nil
+}
+
+// markFailed records a task as Failed with the given restart count and reason
+// clearing any prior terminal stamp (FinishTime = 0)
+// so restartFailedTasks can drive the task again
+func (m *Manager) markFailed(id uuid.UUID, restartCount int, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	persisted, ok := m.TaskDb[id]
+	if !ok {
+		persisted = &task.Task{ID: id}
+		m.TaskDb[id] = persisted
+	}
+	persisted.State = task.Failed
+	persisted.RestartCount = restartCount
+	persisted.FailureReason = reason
+	persisted.FinishTime = time.Time{}
 }
 
 func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
@@ -409,7 +534,7 @@ func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
 		return
 	}
 
-	url := fmt.Sprintf("http://%s/tasks", w)
+	url := fmt.Sprintf(WorkerTasksURL, w)
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
 		log.Printf("Error connecting to %v: %v", w, err)
@@ -430,7 +555,10 @@ func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
 func (m *Manager) checkTaskHealth(ctx context.Context, t task.Task, w string) error {
 	hc := t.HealthCheck
 
-	host := strings.SplitN(w, ":", 2)[0]
+	host, _, err := net.SplitHostPort(w)
+	if err != nil {
+		return fmt.Errorf("invalid worker address %q: %w", w, err)
+	}
 	hostPort := hostPortFor(t.HostPorts, hc.Port)
 	if hostPort == 0 {
 		return fmt.Errorf("error: task %s has no published host port for container port %d", t.ID, hc.Port)
@@ -442,7 +570,7 @@ func (m *Manager) checkTaskHealth(ctx context.Context, t task.Task, w string) er
 		if path == "" {
 			path = "/"
 		}
-		url := fmt.Sprintf("http://%s:%d%s", host, hostPort, path)
+		url := fmt.Sprintf("http://%s%s", net.JoinHostPort(host, strconv.Itoa(hostPort)), path)
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
@@ -475,7 +603,7 @@ func (m *Manager) checkTaskHealth(ctx context.Context, t task.Task, w string) er
 		return nil
 
 	case task.HealthCheckTCP:
-		addr := fmt.Sprintf("%s:%d", host, hostPort)
+		addr := net.JoinHostPort(host, strconv.Itoa(hostPort))
 
 		var d net.Dialer
 		conn, err := d.DialContext(ctx, "tcp", addr)
