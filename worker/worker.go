@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -22,6 +23,8 @@ const (
 	DbFilename   = "%s_tasks.db"
 	DbFilemode   = os.FileMode(0600)
 	DbBucketName = "tasks"
+
+	LoopInterval = 10 * time.Second
 )
 
 type Worker struct {
@@ -357,7 +360,9 @@ func (w *Worker) StopTask(t task.Task) task.DockerResult {
 	return result
 }
 
-func (w *Worker) RunTasks() {
+func (w *Worker) RunTasks(ctx context.Context) {
+	ticker := time.NewTicker(LoopInterval)
+	defer ticker.Stop()
 	for {
 		if w.queueLen() != 0 {
 			result := w.runTask()
@@ -367,11 +372,17 @@ func (w *Worker) RunTasks() {
 		} else {
 			log.Println("No tasks to process currently.")
 		}
-		time.Sleep(time.Second * 10)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
-func (w *Worker) CollectStats() {
+func (w *Worker) CollectStats(ctx context.Context) {
+	ticker := time.NewTicker(LoopInterval)
+	defer ticker.Stop()
 	for {
 		log.Println("Collecting stats...")
 		fresh := stats.GetStats()
@@ -417,7 +428,11 @@ func (w *Worker) CollectStats() {
 		w.Stats = fresh
 		w.statsMu.Unlock()
 
-		time.Sleep(10 * time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -534,12 +549,18 @@ func (w *Worker) updateTasks() {
 	}
 }
 
-func (w *Worker) UpdateTasks() {
+func (w *Worker) UpdateTasks(ctx context.Context) {
+	ticker := time.NewTicker(LoopInterval)
+	defer ticker.Stop()
 	for {
 		log.Println("Checking status of tasks")
 		w.updateTasks()
 		log.Println("Task updates completed")
 		log.Println("Sleeping for 10 seconds...")
-		time.Sleep(10 * time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
