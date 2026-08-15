@@ -230,6 +230,33 @@ func (m *Manager) getTasks() []task.Task {
 	return tasks
 }
 
+func (m *Manager) getTaskViews() []TaskView {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.TaskDb == nil {
+		return []TaskView{}
+	}
+
+	persisted, err := m.TaskDb.List()
+	if err != nil {
+		log.Printf("Error listing tasks: %v\n", err)
+		return []TaskView{}
+	}
+
+	views := make([]TaskView, 0, len(persisted))
+	for _, t := range persisted {
+		if t == nil {
+			continue
+		}
+		views = append(views, TaskView{
+			Task:   *t,
+			Worker: m.TaskWorkerMap[t.ID],
+		})
+	}
+	return views
+}
+
 func (m *Manager) getTask(id uuid.UUID) (task.Task, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
