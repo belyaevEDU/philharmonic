@@ -44,10 +44,8 @@ type Manager struct {
 	Pending       queue.Queue
 	TaskDb        store.Store[task.Task]
 	EventDb       store.Store[task.TaskEvent]
-	Workers       []string
 	WorkerTaskMap map[string][]uuid.UUID
 	TaskWorkerMap map[uuid.UUID]string
-	LastWorker    int
 	mu            sync.RWMutex
 	pendingMu     sync.Mutex
 	checkers      map[uuid.UUID]context.CancelFunc
@@ -84,7 +82,6 @@ func New(workers []string, schedulerType, dbType string) (*Manager, error) {
 
 	m := Manager{
 		Pending:       *queue.New(),
-		Workers:       workers,
 		WorkerTaskMap: workerTaskMap,
 		TaskWorkerMap: taskWorkerMap,
 		checkers:      make(map[uuid.UUID]context.CancelFunc),
@@ -231,6 +228,33 @@ func (m *Manager) getTasks() []task.Task {
 		}
 	}
 	return tasks
+}
+
+func (m *Manager) getTaskViews() []TaskView {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.TaskDb == nil {
+		return []TaskView{}
+	}
+
+	persisted, err := m.TaskDb.List()
+	if err != nil {
+		log.Printf("Error listing tasks: %v\n", err)
+		return []TaskView{}
+	}
+
+	views := make([]TaskView, 0, len(persisted))
+	for _, t := range persisted {
+		if t == nil {
+			continue
+		}
+		views = append(views, TaskView{
+			Task:   *t,
+			Worker: m.TaskWorkerMap[t.ID],
+		})
+	}
+	return views
 }
 
 func (m *Manager) getTask(id uuid.UUID) (task.Task, bool) {
@@ -410,12 +434,12 @@ func (m *Manager) fetchTasksFromWorker(worker string) ([]*task.Task, error) {
 }
 
 func (m *Manager) updateTasks() {
-	for _, worker := range m.Workers {
-		log.Printf("Checking worker %v for task updates\n", worker)
+	for _, n := range m.WorkerNodes {
+		log.Printf("Checking worker %v for task updates\n", n.Address)
 
-		tasks, err := m.fetchTasksFromWorker(worker)
+		tasks, err := m.fetchTasksFromWorker(n.Address)
 		if err != nil {
-			log.Printf("Error fetching tasks from %s: %v\n", worker, err)
+			log.Printf("Error fetching tasks from %s: %v\n", n.Address, err)
 			continue
 		}
 
