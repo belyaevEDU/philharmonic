@@ -19,4 +19,5 @@ type Store[T any] interface {
 	Get(key uuid.UUID) (*T, error)
 	List() ([]*T, error)
 	Count() (int, error)
+	Close() error
 }
