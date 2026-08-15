@@ -99,7 +99,14 @@ func New(workers []string, schedulerType, dbType string) (*Manager, error) {
 		es = store.NewInMemoryTaskEventStore()
 	case store.BoltType:
 		ts, err = store.NewBoltTaskStore(DbTasksFile, DbFilemode, DbTaskBucket)
+		if err != nil {
+			return nil, fmt.Errorf("opening tasks db: %w", err)
+		}
 		es, err = store.NewBoltTaskEventStore(DbEventsFile, DbFilemode, DbEventBucket)
+		if err != nil {
+			_ = ts.Close()
+			return nil, fmt.Errorf("opening events db: %w", err)
+		}
 	default:
 		return nil, errors.New("unknown db type given")
 	}
@@ -111,6 +118,22 @@ func New(workers []string, schedulerType, dbType string) (*Manager, error) {
 	m.TaskDb = ts
 	m.EventDb = es
 	return &m, nil
+}
+
+func (m *Manager) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var errs []error
+	if m.TaskDb != nil {
+		errs = append(errs, m.TaskDb.Close())
+		m.TaskDb = nil
+	}
+	if m.EventDb != nil {
+		errs = append(errs, m.EventDb.Close())
+		m.EventDb = nil
+	}
+	return errors.Join(errs...)
 }
 
 func (m *Manager) SelectWorker(t *task.Task) (*node.Node, error) {
