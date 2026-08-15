@@ -31,6 +31,8 @@ const (
 
 	MaxRestarts = 3
 
+	LoopInterval = 10 * time.Second
+
 	DbTasksFile   = "tasks.db"
 	DbEventsFile  = "events.db"
 	DbFilemode    = os.FileMode(0600)
@@ -478,22 +480,34 @@ func (m *Manager) updateTasks() {
 	}
 }
 
-func (m *Manager) UpdateTasks() {
+func (m *Manager) UpdateTasks(ctx context.Context) {
+	ticker := time.NewTicker(LoopInterval)
+	defer ticker.Stop()
 	for {
 		log.Println("[Manager] Checking for task updates from workers")
 		m.updateTasks()
 		log.Println("Task updates completed. Sleeping for 10 seconds")
-		time.Sleep(10 * time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
-func (m *Manager) DoHealthChecks() {
+func (m *Manager) DoHealthChecks(ctx context.Context) {
+	ticker := time.NewTicker(LoopInterval)
+	defer ticker.Stop()
 	for {
 		log.Println("[Manager] Reconciling task health checkers")
-		m.reconcileCheckers()
+		m.reconcileCheckers(ctx)
 		m.restartFailedTasks()
 		log.Println("Sleeping for 10 seconds")
-		time.Sleep(10 * time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -746,7 +760,7 @@ func (m *Manager) checkTaskHealth(ctx context.Context, t task.Task, w string) er
 	}
 }
 
-func (m *Manager) reconcileCheckers() {
+func (m *Manager) reconcileCheckers(ctx context.Context) {
 	seen := make(map[uuid.UUID]struct{})
 
 	for _, t := range m.getTasks() {
@@ -761,7 +775,7 @@ func (m *Manager) reconcileCheckers() {
 		}
 
 		if _, running := m.checkers[t.ID]; !running {
-			m.startChecker(t)
+			m.startChecker(ctx, t)
 			log.Printf("Started %s health checker for task %s\n", t.HealthCheck.Type, t.ID)
 		}
 	}
@@ -798,8 +812,11 @@ func (m *Manager) restartFailedTasks() {
 	}
 }
 
-func (m *Manager) startChecker(t task.Task) {
-	ctx, cancel := context.WithCancel(context.Background())
+func (m *Manager) startChecker(ctx context.Context, t task.Task) {
+	// derive each per-task checker ctx from the manager's root ctx so a shutdown
+	// (root cancel) tears down all running checkers, not just the ones
+	// reconcileCheckers stops
+	ctx, cancel := context.WithCancel(ctx)
 	m.checkers[t.ID] = cancel
 	go m.runChecker(ctx, t)
 }
@@ -874,12 +891,18 @@ func (m *Manager) runChecker(ctx context.Context, t task.Task) {
 	}
 }
 
-func (m *Manager) ProcessTasks() {
+func (m *Manager) ProcessTasks(ctx context.Context) {
+	ticker := time.NewTicker(LoopInterval)
+	defer ticker.Stop()
 	for {
 		log.Println("[Manager] Processing any tasks in the queue")
 		m.SendWork()
 		log.Println("Sleeping for 10 seconds")
-		time.Sleep(10 * time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
