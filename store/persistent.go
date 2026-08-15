@@ -6,60 +6,61 @@ import (
 	"os"
 	"time"
 
-	"github.com/belyaevedu/philharmonic/task"
 	"github.com/google/uuid"
 	bolt "go.etcd.io/bbolt"
 )
 
 const boltOpenTimeout = 5 * time.Second
 
-type TaskStore struct {
+// BoltStore is a generic bbolt-backed implementation of Store[T]
+// Values are json-marshalled into a single bucket,
+// keyed by the 16 raw bytes of the value's uuid.
+// In short, key: uuid.UUID; value: T
+type BoltStore[T any] struct {
 	Db       *bolt.DB
 	DbFile   string
 	FileMode os.FileMode
 	Bucket   string
 }
 
-var _ Store[task.Task] = (*TaskStore)(nil)
-
-func NewBoltTaskStore(file string, mode os.FileMode, bucket string) (*TaskStore, error) {
+func NewBoltStore[T any](file string, mode os.FileMode, bucket string) (*BoltStore[T], error) {
 	db, err := bolt.Open(file, mode, &bolt.Options{Timeout: boltOpenTimeout})
 	if err != nil {
 		return nil, fmt.Errorf("unable to open %s: %w", file, err)
 	}
 
-	ts := &TaskStore{
+	s := &BoltStore[T]{
 		Db:       db,
 		DbFile:   file,
 		FileMode: mode,
 		Bucket:   bucket,
 	}
 
-	if err := ts.CreateBucket(); err != nil {
+	if err := s.CreateBucket(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 
-	return ts, nil
+	return s, nil
 }
 
-func (t *TaskStore) Close() error {
-	return t.Db.Close()
+func (s *BoltStore[T]) Close() error {
+	return s.Db.Close()
 }
 
-func (t *TaskStore) CreateBucket() error {
-	return t.Db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte(t.Bucket))
+func (s *BoltStore[T]) CreateBucket() error {
+	return s.Db.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists([]byte(s.Bucket))
 		if err != nil {
-			return fmt.Errorf("create bucket %s: %w", t.Bucket, err)
+			return fmt.Errorf("create bucket %s: %w", s.Bucket, err)
 		}
 		return nil
 	})
 }
 
-func (t *TaskStore) Put(key uuid.UUID, value *task.Task) error {
-	return t.Db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(t.Bucket))
+func (s *BoltStore[T]) Put(key uuid.UUID, value *T) error {
+	return s.Db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(s.Bucket))
 
 		buf, err := json.Marshal(value)
 		if err != nil {
@@ -70,13 +71,13 @@ func (t *TaskStore) Put(key uuid.UUID, value *task.Task) error {
 	})
 }
 
-func (t *TaskStore) Get(key uuid.UUID) (*task.Task, error) {
-	var out task.Task
-	err := t.Db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(t.Bucket))
+func (s *BoltStore[T]) Get(key uuid.UUID) (*T, error) {
+	var out T
+	err := s.Db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(s.Bucket))
 		raw := b.Get(key[:])
 		if raw == nil {
-			return fmt.Errorf("task %s: %w", key, ErrNotFound)
+			return fmt.Errorf("%w: %s", ErrNotFound, key)
 		}
 		if err := json.Unmarshal(raw, &out); err != nil {
 			return fmt.Errorf("unable to unmarshal: %w", err)
@@ -89,139 +90,29 @@ func (t *TaskStore) Get(key uuid.UUID) (*task.Task, error) {
 	return &out, nil
 }
 
-func (t *TaskStore) List() ([]*task.Task, error) {
-	var tasks []*task.Task
-	err := t.Db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(t.Bucket))
+func (s *BoltStore[T]) List() ([]*T, error) {
+	var out []*T
+	err := s.Db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(s.Bucket))
 		return b.ForEach(func(k, v []byte) error {
-			var out task.Task
-			if err := json.Unmarshal(v, &out); err != nil {
+			var item T
+			if err := json.Unmarshal(v, &item); err != nil {
 				return err
 			}
-			tasks = append(tasks, &out)
+			out = append(out, &item)
 			return nil
 		})
 	})
 	if err != nil {
 		return nil, err
 	}
-	return tasks, nil
+	return out, nil
 }
 
-func (t *TaskStore) Count() (int, error) {
+func (s *BoltStore[T]) Count() (int, error) {
 	count := 0
-	err := t.Db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(t.Bucket))
-		return b.ForEach(func(k, v []byte) error {
-			count++
-			return nil
-		})
-	})
-	if err != nil {
-		return -1, err
-	}
-	return count, nil
-}
-
-type TaskEventStore struct {
-	Db       *bolt.DB
-	DbFile   string
-	FileMode os.FileMode
-	Bucket   string
-}
-
-var _ Store[task.TaskEvent] = (*TaskEventStore)(nil)
-
-func NewBoltTaskEventStore(file string, mode os.FileMode, bucket string) (*TaskEventStore, error) {
-	db, err := bolt.Open(file, mode, &bolt.Options{Timeout: boltOpenTimeout})
-	if err != nil {
-		return nil, fmt.Errorf("unable to open %s: %w", file, err)
-	}
-
-	tes := &TaskEventStore{
-		Db:       db,
-		DbFile:   file,
-		FileMode: mode,
-		Bucket:   bucket,
-	}
-
-	if err := tes.CreateBucket(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-
-	return tes, nil
-}
-
-func (tes *TaskEventStore) Close() error {
-	return tes.Db.Close()
-}
-
-func (tes *TaskEventStore) CreateBucket() error {
-	return tes.Db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte(tes.Bucket))
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %w", tes.Bucket, err)
-		}
-		return nil
-	})
-}
-
-func (tes *TaskEventStore) Put(key uuid.UUID, value *task.TaskEvent) error {
-	return tes.Db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(tes.Bucket))
-
-		buf, err := json.Marshal(value)
-		if err != nil {
-			return err
-		}
-
-		return b.Put([]byte(key[:]), buf)
-	})
-}
-
-func (tes *TaskEventStore) Get(key uuid.UUID) (*task.TaskEvent, error) {
-	var out task.TaskEvent
-	err := tes.Db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(tes.Bucket))
-		raw := b.Get(key[:])
-		if raw == nil {
-			return fmt.Errorf("task event %s: %w", key, ErrNotFound)
-		}
-		if err := json.Unmarshal(raw, &out); err != nil {
-			return fmt.Errorf("unable to unmarshal: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-func (tes *TaskEventStore) List() ([]*task.TaskEvent, error) {
-	var events []*task.TaskEvent
-	err := tes.Db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(tes.Bucket))
-		return b.ForEach(func(k, v []byte) error {
-			var out task.TaskEvent
-			if err := json.Unmarshal(v, &out); err != nil {
-				return err
-			}
-			events = append(events, &out)
-			return nil
-		})
-	})
-	if err != nil {
-		return nil, err
-	}
-	return events, nil
-}
-
-func (tes *TaskEventStore) Count() (int, error) {
-	count := 0
-	err := tes.Db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(tes.Bucket))
+	err := s.Db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(s.Bucket))
 		return b.ForEach(func(k, v []byte) error {
 			count++
 			return nil
