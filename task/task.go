@@ -99,11 +99,19 @@ type Task struct {
 	FinishTime    time.Time
 }
 
+func (t Task) Key() uuid.UUID { // store.Keyable impl
+	return t.ID
+}
+
 type TaskEvent struct {
 	ID        uuid.UUID
 	State     State
 	Timestamp time.Time
 	Task      Task
+}
+
+func (te TaskEvent) Key() uuid.UUID { // store.Keyable impl
+	return te.ID
 }
 
 type Config struct {

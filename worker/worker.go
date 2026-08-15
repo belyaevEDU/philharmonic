@@ -1,25 +1,36 @@
 package worker
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/belyaevedu/philharmonic/stats"
+	"github.com/belyaevedu/philharmonic/store"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
 )
 
+const (
+	DbFilename   = "%s_tasks.db"
+	DbFilemode   = os.FileMode(0600)
+	DbBucketName = "tasks"
+
+	LoopInterval = 10 * time.Second
+)
+
 type Worker struct {
 	Name  string
 	Queue queue.Queue
-	Db    map[uuid.UUID]*task.Task
+	Db    store.Store[task.Task]
 	Stats *stats.Stats
 
 	dbMu    sync.RWMutex
@@ -32,13 +43,61 @@ type Worker struct {
 	havePrevCpu  bool
 }
 
+func New(name, dbType string) (*Worker, error) {
+	var db store.Store[task.Task]
+	var err error
+	switch dbType {
+	case store.MemoryType:
+		db = store.NewInMemoryStore[task.Task]()
+	case store.BoltType:
+		filename := fmt.Sprintf(DbFilename, name)
+		db, err = store.NewBoltStore[task.Task](filename, DbFilemode, DbBucketName)
+	default:
+		return nil, fmt.Errorf("unknown db type %q", dbType)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &Worker{
+		Name:  name,
+		Queue: *queue.New(),
+		Db:    db,
+	}, nil
+}
+
+func (w *Worker) Close() error {
+	w.dbMu.Lock()
+	defer w.dbMu.Unlock()
+	if w.Db == nil {
+		return nil
+	}
+	err := w.Db.Close()
+	w.Db = nil
+	return err
+}
+
 func (w *Worker) getTasks() []*task.Task {
 	w.dbMu.RLock()
 	defer w.dbMu.RUnlock()
 
-	tasks := make([]*task.Task, 0, len(w.Db))
-	for _, persisted := range w.Db {
-		copy := *persisted
+	if w.Db == nil {
+		return []*task.Task{}
+	}
+
+	persisted, err := w.Db.List()
+	if err != nil {
+		log.Printf("Error listing worker tasks: %v\n", err)
+		return []*task.Task{}
+	}
+
+	tasks := make([]*task.Task, 0, len(persisted))
+	for _, t := range persisted {
+		if t == nil {
+			continue
+		}
+		copy := *t
 		tasks = append(tasks, &copy)
 	}
 	return tasks
@@ -48,8 +107,15 @@ func (w *Worker) getTask(id uuid.UUID) (task.Task, bool) {
 	w.dbMu.RLock()
 	defer w.dbMu.RUnlock()
 
-	persisted, ok := w.Db[id]
-	if !ok {
+	if w.Db == nil {
+		return task.Task{}, false
+	}
+
+	persisted, err := w.Db.Get(id)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			log.Printf("Error getting worker task %s: %v\n", id, err)
+		}
 		return task.Task{}, false
 	}
 	return *persisted, true
@@ -57,11 +123,15 @@ func (w *Worker) getTask(id uuid.UUID) (task.Task, bool) {
 
 func (w *Worker) setTask(t task.Task) {
 	w.dbMu.Lock()
+	defer w.dbMu.Unlock()
+
 	if w.Db == nil {
-		w.Db = make(map[uuid.UUID]*task.Task)
+		log.Printf("Cannot store worker task %s: db is nil\n", t.ID)
+		return
 	}
-	w.Db[t.ID] = &t
-	w.dbMu.Unlock()
+	if err := w.Db.Put(t.ID, &t); err != nil {
+		log.Printf("Error storing worker task %s: %v\n", t.ID, err)
+	}
 }
 
 func (w *Worker) AddTask(t task.Task) {
@@ -74,18 +144,23 @@ func (w *Worker) AddTask(t task.Task) {
 	if t.State == task.Scheduled {
 		w.dbMu.Lock()
 		if w.Db == nil {
-			w.Db = make(map[uuid.UUID]*task.Task)
-		}
-		if persisted, exists := w.Db[t.ID]; exists {
-			if t.ContainerID == "" {
-				t.ContainerID = persisted.ContainerID
+			log.Printf("Cannot store scheduled worker task %s: db is nil\n", t.ID)
+		} else {
+			if persisted, err := w.Db.Get(t.ID); err == nil {
+				if t.ContainerID == "" {
+					t.ContainerID = persisted.ContainerID
+				}
+				if len(t.HostPorts) == 0 {
+					t.HostPorts = persisted.HostPorts
+				}
+			} else if !errors.Is(err, store.ErrNotFound) {
+				log.Printf("Error getting worker task %s: %v\n", t.ID, err)
 			}
-			if len(t.HostPorts) == 0 {
-				t.HostPorts = persisted.HostPorts
+			queued := t
+			if err := w.Db.Put(queued.ID, &queued); err != nil {
+				log.Printf("Error storing worker task %s: %v\n", queued.ID, err)
 			}
 		}
-		queued := t
-		w.Db[t.ID] = &queued
 		w.dbMu.Unlock()
 	}
 
@@ -124,8 +199,13 @@ func (w *Worker) runTask() task.DockerResult {
 	}
 
 	w.dbMu.Lock()
-	taskPersisted := w.Db[taskQueued.ID]
-	if taskPersisted == nil {
+	if w.Db == nil {
+		w.dbMu.Unlock()
+		return task.DockerResult{Error: errors.New("worker db is nil")}
+	}
+
+	taskPersisted, err := w.Db.Get(taskQueued.ID)
+	if errors.Is(err, store.ErrNotFound) {
 		// w.Db has to store the CURRENT state of the container
 		// so we update it if its new and scheduled
 		// all other changes will be stored by startTask and stopTask down the line
@@ -142,7 +222,13 @@ func (w *Worker) runTask() task.DockerResult {
 
 		persisted := taskQueued
 		taskPersisted = &persisted
-		w.Db[taskQueued.ID] = taskPersisted
+		if err := w.Db.Put(taskQueued.ID, taskPersisted); err != nil {
+			w.dbMu.Unlock()
+			return task.DockerResult{Error: fmt.Errorf("storing worker task %s: %w", taskQueued.ID, err)}
+		}
+	} else if err != nil {
+		w.dbMu.Unlock()
+		return task.DockerResult{Error: fmt.Errorf("getting worker task %s: %w", taskQueued.ID, err)}
 	}
 
 	// doubling prevention.
@@ -274,7 +360,9 @@ func (w *Worker) StopTask(t task.Task) task.DockerResult {
 	return result
 }
 
-func (w *Worker) RunTasks() {
+func (w *Worker) RunTasks(ctx context.Context) {
+	ticker := time.NewTicker(LoopInterval)
+	defer ticker.Stop()
 	for {
 		if w.queueLen() != 0 {
 			result := w.runTask()
@@ -284,11 +372,17 @@ func (w *Worker) RunTasks() {
 		} else {
 			log.Println("No tasks to process currently.")
 		}
-		time.Sleep(time.Second * 10)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
-func (w *Worker) CollectStats() {
+func (w *Worker) CollectStats(ctx context.Context) {
+	ticker := time.NewTicker(LoopInterval)
+	defer ticker.Stop()
 	for {
 		log.Println("Collecting stats...")
 		fresh := stats.GetStats()
@@ -315,19 +409,18 @@ func (w *Worker) CollectStats() {
 		fresh.CpuUsage = cpuUsage
 		fresh.Cores = runtime.NumCPU()
 
-		w.dbMu.RLock()
+		persistedTasks := w.getTasks()
 		var (
 			taskCount       int
 			memoryAllocated int64
 		)
-		for _, persisted := range w.Db {
+		for _, persisted := range persistedTasks {
 			if persisted.State != task.Running {
 				continue
 			}
 			taskCount++
 			memoryAllocated += persisted.Memory
 		}
-		w.dbMu.RUnlock()
 		fresh.TaskCount = taskCount
 		fresh.MemoryAllocated = memoryAllocated
 
@@ -335,7 +428,11 @@ func (w *Worker) CollectStats() {
 		w.Stats = fresh
 		w.statsMu.Unlock()
 
-		time.Sleep(10 * time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -372,14 +469,13 @@ func healthCheckFailureReason(health *container.Health) string {
 }
 
 func (w *Worker) updateTasks() {
-	w.dbMu.RLock()
-	runningTasks := make([]task.Task, 0, len(w.Db))
-	for _, persisted := range w.Db {
+	persistedTasks := w.getTasks()
+	runningTasks := make([]task.Task, 0, len(persistedTasks))
+	for _, persisted := range persistedTasks {
 		if persisted.State == task.Running {
 			runningTasks = append(runningTasks, *persisted)
 		}
 	}
-	w.dbMu.RUnlock()
 
 	for _, runningTask := range runningTasks {
 		resp := w.InspectTask(runningTask)
@@ -388,26 +484,44 @@ func (w *Worker) updateTasks() {
 		}
 
 		w.dbMu.Lock()
-		persisted, ok := w.Db[runningTask.ID]
-		if !ok || persisted.State != task.Running {
+		if w.Db == nil {
+			w.dbMu.Unlock()
+			continue
+		}
+		persisted, err := w.Db.Get(runningTask.ID)
+		if err != nil {
+			if !errors.Is(err, store.ErrNotFound) {
+				log.Printf("error getting worker task %s: %v\n", runningTask.ID, err)
+			}
+			w.dbMu.Unlock()
+			continue
+		}
+		if persisted.State != task.Running {
 			w.dbMu.Unlock()
 			continue
 		}
 
+		updated := *persisted
 		if resp.Response == nil {
-			persisted.State = task.Failed
+			updated.State = task.Failed
 			if resp.Error != nil {
-				persisted.FailureReason = fmt.Sprintf("container inspection failed: %v", resp.Error)
+				updated.FailureReason = fmt.Sprintf("container inspection failed: %v", resp.Error)
 			} else {
-				persisted.FailureReason = "no container found for running task"
+				updated.FailureReason = "no container found for running task"
+			}
+			if err := w.Db.Put(runningTask.ID, &updated); err != nil {
+				log.Printf("error storing failed task %s: %v\n", runningTask.ID, err)
 			}
 			w.dbMu.Unlock()
 			continue
 		}
 
 		if resp.Response.State == nil {
-			persisted.State = task.Failed
-			persisted.FailureReason = "container inspection returned no state"
+			updated.State = task.Failed
+			updated.FailureReason = "container inspection returned no state"
+			if err := w.Db.Put(runningTask.ID, &updated); err != nil {
+				log.Printf("error storing failed task %s: %v\n", runningTask.ID, err)
+			}
 			w.dbMu.Unlock()
 			continue
 		}
@@ -417,27 +531,36 @@ func (w *Worker) updateTasks() {
 				"Container for task %s in non-running state %s",
 				runningTask.ID, resp.Response.State.Status,
 			)
-			persisted.State = task.Failed
-			persisted.FailureReason = fmt.Sprintf("container exited with code %d", resp.Response.State.ExitCode)
+			updated.State = task.Failed
+			updated.FailureReason = fmt.Sprintf("container exited with code %d", resp.Response.State.ExitCode)
 		} else if resp.Response.State.Health != nil && resp.Response.State.Health.Status == container.Unhealthy {
 			log.Printf("Container for task %s is unhealthy", runningTask.ID)
-			persisted.State = task.Failed
-			persisted.FailureReason = healthCheckFailureReason(resp.Response.State.Health)
+			updated.State = task.Failed
+			updated.FailureReason = healthCheckFailureReason(resp.Response.State.Health)
 		}
 
 		if resp.Response.NetworkSettings != nil {
-			persisted.HostPorts = task.PortMappingsFromPortMap(resp.Response.NetworkSettings.Ports)
+			updated.HostPorts = task.PortMappingsFromPortMap(resp.Response.NetworkSettings.Ports)
+		}
+		if err := w.Db.Put(runningTask.ID, &updated); err != nil {
+			log.Printf("error storing task %s: %v\n", runningTask.ID, err)
 		}
 		w.dbMu.Unlock()
 	}
 }
 
-func (w *Worker) UpdateTasks() {
+func (w *Worker) UpdateTasks(ctx context.Context) {
+	ticker := time.NewTicker(LoopInterval)
+	defer ticker.Stop()
 	for {
 		log.Println("Checking status of tasks")
 		w.updateTasks()
 		log.Println("Task updates completed")
 		log.Println("Sleeping for 10 seconds...")
-		time.Sleep(10 * time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
