@@ -45,10 +45,10 @@ func New(name, dbType string) (*Worker, error) {
 	var err error
 	switch dbType {
 	case store.MemoryType:
-		db = store.NewInMemoryTaskStore()
+		db = store.NewInMemoryStore[task.Task]()
 	case store.BoltType:
 		filename := fmt.Sprintf(DbFilename, name)
-		db, err = store.NewBoltTaskStore(filename, DbFilemode, DbBucketName)
+		db, err = store.NewBoltStore[task.Task](filename, DbFilemode, DbBucketName)
 	default:
 		return nil, fmt.Errorf("unknown db type %q", dbType)
 	}
