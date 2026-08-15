@@ -95,14 +95,14 @@ func New(workers []string, schedulerType, dbType string) (*Manager, error) {
 	var err error
 	switch dbType {
 	case store.MemoryType:
-		ts = store.NewInMemoryTaskStore()
-		es = store.NewInMemoryTaskEventStore()
+		ts = store.NewInMemoryStore[task.Task]()
+		es = store.NewInMemoryStore[task.TaskEvent]()
 	case store.BoltType:
-		ts, err = store.NewBoltTaskStore(DbTasksFile, DbFilemode, DbTaskBucket)
+		ts, err = store.NewBoltStore[task.Task](DbTasksFile, DbFilemode, DbTaskBucket)
 		if err != nil {
 			return nil, fmt.Errorf("opening tasks db: %w", err)
 		}
-		es, err = store.NewBoltTaskEventStore(DbEventsFile, DbFilemode, DbEventBucket)
+		es, err = store.NewBoltStore[task.TaskEvent](DbEventsFile, DbFilemode, DbEventBucket)
 		if err != nil {
 			_ = ts.Close()
 			return nil, fmt.Errorf("opening events db: %w", err)
