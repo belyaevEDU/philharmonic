@@ -88,3 +88,12 @@ func (a *Api) GetStatsHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf(handlers.ErrorEncodingJson, err)
 	}
 }
+
+func (a *Api) GetPortsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	ports := a.Worker.HostPorts()
+	if err := json.NewEncoder(w).Encode(ports); err != nil {
+		log.Printf(handlers.ErrorEncodingJson, err)
+	}
+}
