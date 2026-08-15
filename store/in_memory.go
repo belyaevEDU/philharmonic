@@ -75,6 +75,8 @@ func (i *InMemoryTaskStore) Count() (int, error) {
 	return len(i.db), nil
 }
 
+func (i *InMemoryTaskStore) Close() error { return nil }
+
 type InMemoryTaskEventStore struct {
 	mu sync.RWMutex
 	db map[uuid.UUID]*task.TaskEvent
@@ -136,3 +138,5 @@ func (i *InMemoryTaskEventStore) Count() (int, error) {
 
 	return len(i.db), nil
 }
+
+func (i *InMemoryTaskEventStore) Close() error { return nil }
