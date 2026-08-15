@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/belyaevedu/philharmonic/task"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -29,6 +30,11 @@ type Api struct {
 type HTTPResponse struct {
 	HTTPStatusCode int
 	Message        string
+}
+
+type TaskView struct {
+	task.Task
+	Worker string `json:",omitempty"`
 }
 
 func (a *Api) initRouter() {
