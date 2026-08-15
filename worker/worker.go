@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/belyaevedu/philharmonic/stats"
 	"github.com/belyaevedu/philharmonic/store"
 	"github.com/belyaevedu/philharmonic/task"
+	"github.com/cakturk/go-netstat/netstat"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
@@ -563,4 +565,52 @@ func (w *Worker) UpdateTasks(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+type OccupiedPorts struct {
+	TCP []int `json:"tcp,omitempty"`
+	UDP []int `json:"udp,omitempty"`
+}
+
+// sctp omitted. docker's create-time bind error patches that issue
+func (w *Worker) HostPorts() OccupiedPorts {
+	var occ OccupiedPorts
+
+	tcpListen := func(s *netstat.SockTabEntry) bool {
+		// for tcp only LISTEN conns hold established host:port binds
+		return s.State == netstat.Listen && s.LocalAddr != nil
+	}
+	for _, fn := range []func(netstat.AcceptFn) ([]netstat.SockTabEntry, error){
+		netstat.TCPSocks, netstat.TCP6Socks,
+	} {
+		entries, err := fn(tcpListen)
+		if err != nil {
+			log.Printf("Error reading TCP listening sockets: %v\n", err)
+			continue
+		}
+		for _, e := range entries {
+			if e.LocalAddr != nil && e.LocalAddr.Port != 0 {
+				occ.TCP = append(occ.TCP, int(e.LocalAddr.Port))
+			}
+		}
+	}
+
+	for _, fn := range []func(netstat.AcceptFn) ([]netstat.SockTabEntry, error){
+		netstat.UDPSocks, netstat.UDP6Socks,
+	} {
+		entries, err := fn(netstat.NoopFilter) // udp doesnt care
+		if err != nil {
+			log.Printf("Error reading UDP sockets: %v\n", err)
+			continue
+		}
+		for _, e := range entries {
+			if e.LocalAddr != nil && e.LocalAddr.Port != 0 {
+				occ.UDP = append(occ.UDP, int(e.LocalAddr.Port))
+			}
+		}
+	}
+
+	sort.Ints(occ.TCP)
+	sort.Ints(occ.UDP)
+	return occ
 }
