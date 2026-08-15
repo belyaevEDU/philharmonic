@@ -64,6 +64,17 @@ func New(name, dbType string) (*Worker, error) {
 	}, nil
 }
 
+func (w *Worker) Close() error {
+	w.dbMu.Lock()
+	defer w.dbMu.Unlock()
+	if w.Db == nil {
+		return nil
+	}
+	err := w.Db.Close()
+	w.Db = nil
+	return err
+}
+
 func (w *Worker) getTasks() []*task.Task {
 	w.dbMu.RLock()
 	defer w.dbMu.RUnlock()
