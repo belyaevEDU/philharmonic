@@ -49,7 +49,7 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 func (a *Api) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	err := json.NewEncoder(w).Encode(a.Manager.getTasks())
+	err := json.NewEncoder(w).Encode(a.Manager.getTaskViews())
 	if err != nil {
 		log.Printf(handlers.ErrorEncodingJson, err.Error())
 	}
