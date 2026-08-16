@@ -62,8 +62,7 @@ func New(workers []string, schedulerType, dbType string) (*Manager, error) {
 	for _, worker := range workers {
 		workerTaskMap[worker] = []uuid.UUID{}
 
-		nAPI := fmt.Sprintf("http://%v", worker)
-		n, err := node.New(worker, nAPI, WorkerRole)
+		n, err := node.New(worker, WorkerRole)
 		if err != nil {
 			return nil, fmt.Errorf("invalid worker %q: %w", worker, err)
 		}
