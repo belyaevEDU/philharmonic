@@ -60,7 +60,10 @@ The manager controls the orchestration system. Is responsible for:
 		go m.DoHealthChecks(ctx)
 
 		api := manager.Api{Address: host, Port: port, Manager: m}
-		api.Start()
+		if err := api.Start(); err != nil {
+			log.Println(err)
+			os.Exit(1)
+		}
 	},
 }
 
