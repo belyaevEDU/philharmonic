@@ -14,6 +14,7 @@ import (
 
 	"github.com/belyaevedu/philharmonic/stats"
 	"github.com/belyaevedu/philharmonic/utils"
+	"github.com/belyaevedu/philharmonic/worker"
 )
 
 const (
@@ -106,6 +107,29 @@ func (n *Node) GetStats() (*stats.Stats, error) {
 	n.mu.Unlock()
 
 	return &s, nil
+}
+
+func (n *Node) GetPorts() (*worker.OccupiedPorts, error) {
+	url := fmt.Sprintf("%s/ports", n.Api)
+	resp, err := http.Get(url) // #nosec G107
+	if err != nil {
+		return nil, fmt.Errorf("error connecting to %v: %w", n.Api, err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Error closing response body: %v\n", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("error retrieving ports from %v: status %d", n.Api, resp.StatusCode)
+	}
+
+	var occ worker.OccupiedPorts
+	if err := json.NewDecoder(resp.Body).Decode(&occ); err != nil {
+		return nil, fmt.Errorf("error unmarshalling ports from %v: %w", n.Api, err)
+	}
+	return &occ, nil
 }
 
 // a concurrency-safe point-in-time copy of the resource fields
