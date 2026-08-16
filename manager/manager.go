@@ -629,20 +629,20 @@ func (m *Manager) restartTask(t task.Task) error {
 
 	var w *node.Node
 	if owner != "" {
-		w = m.workerByAddress(owner)
-		if w == nil {
-			reason := fmt.Sprintf("assigned worker %q is unavailable", owner)
-			m.markFailed(t.ID, t.RestartCount+1, reason)
-			return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
+		ownerNode := m.workerByAddress(owner)
+		if ownerNode != nil && (!hasPinnedHostPorts(&next) || m.canHost(&next, m.fetchWorkerPorts(ownerNode), true)) {
+			w = ownerNode
 		}
-	} else {
-		var err error
-		w, err = m.SelectWorker(&next)
+	}
+
+	if w == nil {
+		selected, err := m.SelectWorker(&next)
 		if err != nil {
 			reason := fmt.Sprintf("no available worker to restart: %v", err)
-			m.markFailed(t.ID, t.RestartCount+1, reason)
+			m.stopTaskTerminal(t, reason)
 			return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
 		}
+		w = selected
 	}
 
 	te := task.TaskEvent{
@@ -691,7 +691,11 @@ func (m *Manager) restartTask(t task.Task) error {
 	}
 
 	m.mu.Lock()
-	if m.TaskWorkerMap[t.ID] != w.Address {
+	oldOwner := m.TaskWorkerMap[t.ID]
+	if oldOwner != w.Address {
+		if oldOwner != "" {
+			m.removeTaskID(oldOwner, t.ID)
+		}
 		m.WorkerTaskMap[w.Address] = append(m.WorkerTaskMap[w.Address], t.ID)
 	}
 	m.TaskWorkerMap[t.ID] = w.Address
@@ -705,15 +709,29 @@ func (m *Manager) restartTask(t task.Task) error {
 	}
 	m.mu.Unlock()
 
+	if oldOwner != "" && oldOwner != w.Address {
+		m.bestEffortStopOldContainer(oldOwner, t)
+	}
+
 	newTask := task.Task{}
 	if err := d.Decode(&newTask); err != nil {
 		log.Printf("Error decoding restart response: %v\n", err)
-		// ownership already commited via 201, so we dont really care about a json decoding error
+		// ownership already committed via 201, so we dont really care about a json decoding error
 		return nil
 	}
 
 	log.Printf("Task restarted: %#v\n", newTask)
 	return nil
+}
+
+func (m *Manager) removeTaskID(worker string, id uuid.UUID) {
+	tasks := m.WorkerTaskMap[worker]
+	for i, tid := range tasks {
+		if tid == id {
+			m.WorkerTaskMap[worker] = append(tasks[:i], tasks[i+1:]...)
+			return
+		}
+	}
 }
 
 // markFailed records a task as Failed with the given restart count and reason
@@ -745,6 +763,42 @@ func (m *Manager) markFailed(id uuid.UUID, restartCount int, reason string) {
 	updated.FinishTime = time.Time{}
 	if err := m.TaskDb.Put(id, &updated); err != nil {
 		log.Printf("Cannot mark task %s as failed: %v\n", id, err)
+	}
+}
+
+// used when a restart relocates a task to a different
+// worker so the previous container isn't orphaned.
+// errors only logged
+func (m *Manager) bestEffortStopOldContainer(addr string, t task.Task) {
+	if t.ContainerID == "" {
+		return
+	}
+	stopTask := t
+	stopTask.State = task.Completed
+	te := task.TaskEvent{
+		ID:        uuid.New(),
+		State:     task.Completed,
+		Timestamp: time.Now(),
+		Task:      stopTask,
+	}
+	data, err := json.Marshal(te)
+	if err != nil {
+		log.Printf("Error marshalling cleanup stop for task %s: %v", t.ID, err)
+		return
+	}
+	url := fmt.Sprintf(WorkerTasksURL, addr)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
+	if err != nil {
+		log.Printf("Could not reach old owner %s to stop orphaned container %s: %v", addr, t.ContainerID, err)
+		return
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Error closing response body: %v", err)
+		}
+	}()
+	if resp.StatusCode != http.StatusCreated {
+		log.Printf("Old owner %s responded %d stopping orphaned container %s", addr, resp.StatusCode, t.ContainerID)
 	}
 }
 
