@@ -21,6 +21,7 @@ import (
 	"github.com/belyaevedu/philharmonic/scheduler"
 	"github.com/belyaevedu/philharmonic/store"
 	"github.com/belyaevedu/philharmonic/task"
+	"github.com/belyaevedu/philharmonic/worker"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
 )
@@ -140,6 +141,23 @@ func (m *Manager) SelectWorker(t *task.Task) (*node.Node, error) {
 		return nil, fmt.Errorf("no available candidates match resource requests for task %s", t.ID)
 	}
 
+	if hasPinnedHostPorts(t) {
+		able := make([]*node.Node, 0, len(candidates))
+		for _, c := range candidates {
+			occ := m.fetchWorkerPorts(c)
+			if m.canHost(t, occ, false) {
+				able = append(able, c)
+			}
+		}
+		if len(able) == 0 {
+			return nil, fmt.Errorf(
+				"no worker can host task %s: every candidate has a conflicting host port",
+				t.ID,
+			)
+		}
+		candidates = able
+	}
+
 	scores := m.Scheduler.Score(t, candidates)
 	selectedNode := m.Scheduler.Pick(scores, candidates)
 	if selectedNode == nil {
@@ -147,6 +165,69 @@ func (m *Manager) SelectWorker(t *task.Task) (*node.Node, error) {
 	}
 
 	return selectedNode, nil
+}
+
+func hasPinnedHostPorts(t *task.Task) bool {
+	if t == nil {
+		return false
+	}
+	for _, pm := range t.Ports {
+		if pm.HostPort != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func protoPortKey(proto string, port int) string {
+	if proto == "" {
+		proto = "tcp"
+	}
+	return proto + ":" + strconv.Itoa(port)
+}
+
+func (m *Manager) canHost(t *task.Task, occ *worker.OccupiedPorts, excludeOwnPorts bool) bool {
+	if !hasPinnedHostPorts(t) {
+		return true
+	}
+	if occ == nil {
+		return true
+	}
+
+	occupied := make(map[string]struct{}, len(occ.TCP)+len(occ.UDP))
+	for _, p := range occ.TCP {
+		occupied[protoPortKey("tcp", p)] = struct{}{}
+	}
+	for _, p := range occ.UDP {
+		occupied[protoPortKey("udp", p)] = struct{}{}
+	}
+
+	if excludeOwnPorts {
+		for _, pm := range t.HostPorts {
+			if pm.HostPort != 0 {
+				delete(occupied, protoPortKey(string(pm.Protocol), pm.HostPort))
+			}
+		}
+	}
+
+	for _, pm := range t.Ports {
+		if pm.HostPort == 0 {
+			continue
+		}
+		if _, hit := occupied[protoPortKey(string(pm.Protocol), pm.HostPort)]; hit {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *Manager) fetchWorkerPorts(n *node.Node) *worker.OccupiedPorts {
+	occ, err := n.GetPorts()
+	if err != nil {
+		log.Printf("Error fetching ports from worker %s: %v\n", n.Address, err)
+		return nil
+	}
+	return occ
 }
 
 func (m *Manager) AddTask(te task.TaskEvent) error {
