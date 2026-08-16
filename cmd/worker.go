@@ -50,6 +50,7 @@ The worker runs tasks via Docker and responds to manager's requests about task s
 		go w.RunTasks(ctx)
 		go w.CollectStats(ctx)
 		go w.UpdateTasks(ctx)
+
 		api := worker.Api{Address: host, Port: port, Worker: w}
 		api.Start()
 	},
@@ -60,5 +61,8 @@ func init() {
 	workerCmd.Flags().StringP("host", "H", "0.0.0.0", "Hostname or IP address")
 	workerCmd.Flags().IntP("port", "p", 5556, "Port on which to listen")
 	workerCmd.Flags().StringP("name", "n", fmt.Sprintf("worker-%s", uuid.New().String()), "Name of the worker")
-	workerCmd.Flags().StringP("dbtype", "d", "memory", "Type of data storage to use for tasks (\"memory\" or \"boltdb\")")
+	workerCmd.Flags().StringP(
+		"dbtype", "d", "memory",
+		"Type of data storage to use for tasks (\"memory\" or \"boltdb\")",
+	)
 }
