@@ -23,25 +23,23 @@ const (
 
 type Node struct {
 	Address         string // host:port
-	Api             string
-	Cores           int   // logical CPUs reported by the worker
-	Memory          int64 // total memory in KB
-	Disk            int64 // total disk in bytes
-	MemoryAllocated int64 // bytes reserved by the worker's running tasks
+	Cores           int    // logical CPUs reported by the worker
+	Memory          int64  // total memory in KB
+	Disk            int64  // total disk in bytes
+	MemoryAllocated int64  // bytes reserved by the worker's running tasks
 	Stats           stats.Stats
 	Role            string
 
 	mu sync.Mutex
 }
 
-func New(address, api, role string) (*Node, error) {
+func New(address, role string) (*Node, error) {
 	if err := validateAddress(address); err != nil {
 		return nil, fmt.Errorf("invalid node address %q: %w", address, err)
 	}
 
 	return &Node{
 		Address: address,
-		Api:     api,
 		Role:    role,
 	}, nil
 }
@@ -72,14 +70,14 @@ func validateAddress(address string) error {
 }
 
 func (n *Node) GetStats() (*stats.Stats, error) {
-	url := fmt.Sprintf("%s/stats", n.Api)
+	url := fmt.Sprintf("http://%s/stats", n.Address)
 	resp, err := utils.HTTPWithRetry(http.Get, url, StatsQueryMaxRetries, StatsQuerySleepPeriod) // #nosec G107
 	if err != nil {
-		return nil, fmt.Errorf("error connecting to %v: %w", n.Api, err)
+		return nil, fmt.Errorf("error connecting to %v: %w", n.Address, err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("error retrieving stats from %v: status %d", n.Api, resp.StatusCode)
+		return nil, fmt.Errorf("error retrieving stats from %v: status %d", n.Address, resp.StatusCode)
 	}
 
 	defer func() {
@@ -91,12 +89,12 @@ func (n *Node) GetStats() (*stats.Stats, error) {
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("error reading stats resp body from %v: %w", n.Api, err)
+		return nil, fmt.Errorf("error reading stats resp body from %v: %w", n.Address, err)
 	}
 
 	var s stats.Stats
 	if err := json.Unmarshal(body, &s); err != nil {
-		return nil, fmt.Errorf("error unmarshalling body of stats from %v: %w", n.Api, err)
+		return nil, fmt.Errorf("error unmarshalling body of stats from %v: %w", n.Address, err)
 	}
 
 	n.mu.Lock()
