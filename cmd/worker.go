@@ -52,7 +52,10 @@ The worker runs tasks via Docker and responds to manager's requests about task s
 		go w.UpdateTasks(ctx)
 
 		api := worker.Api{Address: host, Port: port, Worker: w}
-		api.Start()
+		if err := api.Start(); err != nil {
+			log.Println(err)
+			os.Exit(1)
+		}
 	},
 }
 
