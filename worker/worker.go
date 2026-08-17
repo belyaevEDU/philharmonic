@@ -515,6 +515,7 @@ func (w *Worker) updateTasks() {
 		updated := *persisted
 		if resp.Response == nil {
 			updated.State = task.Failed
+			updated.HostPorts = nil
 			if resp.Error != nil {
 				updated.FailureReason = fmt.Sprintf("container inspection failed: %v", resp.Error)
 			} else {
@@ -529,6 +530,7 @@ func (w *Worker) updateTasks() {
 
 		if resp.Response.State == nil {
 			updated.State = task.Failed
+			updated.HostPorts = nil
 			updated.FailureReason = "container inspection returned no state"
 			if err := w.Db.Put(runningTask.ID, &updated); err != nil {
 				log.Printf("error storing failed task %s: %v\n", runningTask.ID, err)
@@ -537,6 +539,7 @@ func (w *Worker) updateTasks() {
 			continue
 		}
 
+		updated.HostPorts = nil
 		if resp.Response.State.Status == container.StateExited {
 			log.Printf(
 				"Container for task %s in non-running state %s",
