@@ -224,18 +224,126 @@ func (m *Manager) canHost(t *task.Task, occ *worker.OccupiedPorts, excludeOwnPor
 	return true
 }
 
-func (m *Manager) fetchWorkerPorts(n *node.Node) *worker.OccupiedPorts {
-	occ, err := n.GetPorts()
-	if err != nil {
-		log.Printf("Error fetching ports from worker %s: %v\n", n.Address, err)
+func (m *Manager) fetchWorkerPorts(n *node.Node) (*worker.OccupiedPorts, error) {
+	return n.GetPorts()
+}
+
+func reservationScope(workerAddress string) string {
+	host, _, err := net.SplitHostPort(workerAddress)
+	if err == nil {
+		return strings.ToLower(host)
+	}
+	return strings.ToLower(workerAddress)
+}
+
+func requestedPortKeys(t *task.Task) []string {
+	if t == nil {
 		return nil
 	}
-	return occ
+	keys := make([]string, 0, len(t.Ports))
+	for _, pm := range t.Ports {
+		if pm.HostPort != 0 {
+			keys = append(keys, protoPortKey(string(pm.Protocol), pm.HostPort))
+		}
+	}
+	return keys
+}
+
+func (m *Manager) portReservationConflictLocked(workerAddress string, t *task.Task, allowOwn bool) bool {
+	reservations := m.portReservations[reservationScope(workerAddress)]
+	for _, key := range requestedPortKeys(t) {
+		if owner, exists := reservations[key]; exists && (owner != t.ID || !allowOwn) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) reservePortsLocked(workerAddress string, t *task.Task) {
+	keys := requestedPortKeys(t)
+	if len(keys) == 0 {
+		return
+	}
+	if m.portReservations == nil {
+		m.portReservations = make(map[string]map[string]uuid.UUID)
+	}
+	scope := reservationScope(workerAddress)
+	reservations := m.portReservations[scope]
+	if reservations == nil {
+		reservations = make(map[string]uuid.UUID)
+		m.portReservations[scope] = reservations
+	}
+	for _, key := range keys {
+		reservations[key] = t.ID
+	}
+}
+
+func (m *Manager) reservePorts(workerAddress string, t *task.Task) bool {
+	m.portMu.Lock()
+	defer m.portMu.Unlock()
+	if m.portReservationConflictLocked(workerAddress, t, true) {
+		return false
+	}
+	m.reservePortsLocked(workerAddress, t)
+	return true
+}
+
+func (m *Manager) releasePorts(workerAddress string, t *task.Task) {
+	m.portMu.Lock()
+	defer m.portMu.Unlock()
+	scope := reservationScope(workerAddress)
+	reservations := m.portReservations[scope]
+	for _, key := range requestedPortKeys(t) {
+		if owner, exists := reservations[key]; exists && owner == t.ID {
+			delete(reservations, key)
+		}
+	}
+	if len(reservations) == 0 {
+		delete(m.portReservations, scope)
+	}
+}
+
+func (m *Manager) selectAndReserveWorker(t *task.Task, owner string) (*node.Node, error) {
+	m.portMu.Lock()
+	defer m.portMu.Unlock()
+
+	if err := task.ValidatePortMappings(t.Ports); err != nil {
+		return nil, err
+	}
+	if owner != "" {
+		ownerNode := m.workerByAddress(owner)
+		if ownerNode != nil && !m.portReservationConflictLocked(owner, t, true) {
+			if !hasPinnedHostPorts(t) {
+				m.reservePortsLocked(owner, t)
+				return ownerNode, nil
+			}
+			occ, err := m.fetchWorkerPorts(ownerNode)
+			if err == nil && m.canHost(t, occ, true) {
+				m.reservePortsLocked(owner, t)
+				return ownerNode, nil
+			}
+			if err != nil {
+				log.Printf("Cannot use owning worker %s during port admission: %v\n", owner, err)
+			}
+		}
+	}
+
+	selected, err := m.selectWorkerLocked(t, "")
+	if err != nil {
+		return nil, err
+	}
+	m.reservePortsLocked(selected.Address, t)
+	return selected, nil
 }
 
 func (m *Manager) AddTask(te task.TaskEvent) error {
-	// A task ID identifies one task lifecycle
+	// A task ID identifies one task lifecycle.
+	// stops are allowed through even for legacy tasks whose mappings are no longer accepted,
+	// so they can still clean up an existing container
 	if te.State != task.Completed && te.Task.State != task.Completed {
+		if err := task.ValidatePortMappings(te.Task.Ports); err != nil {
+			return err
+		}
 		m.mu.Lock()
 		if m.TaskDb == nil {
 			m.mu.Unlock()
