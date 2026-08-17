@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/belyaevedu/philharmonic/node"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/go-chi/chi/v5"
 )
@@ -35,6 +36,12 @@ type HTTPResponse struct {
 type TaskView struct {
 	task.Task
 	Worker string `json:",omitempty"`
+}
+
+type NodeView struct {
+	node.Snapshot
+	Address string `json:",omitempty"`
+	Role    string `json:",omitempty"`
 }
 
 func (a *Api) initRouter() {
