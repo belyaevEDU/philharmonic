@@ -209,7 +209,7 @@ func (c *Config) dockerPorts() (network.PortSet, network.PortMap, error) {
 			proto = pm.Protocol
 		}
 
-		port, _ := network.PortFrom(uint16(pm.ContainerPort), proto)
+		port, _ := network.PortFrom(clampToUint16(pm.ContainerPort), proto)
 		exposed[port] = struct{}{}
 
 		hostPort := ""
