@@ -638,6 +638,23 @@ func (m *Manager) DoHealthChecks(ctx context.Context) {
 	}
 }
 
+func (m *Manager) RefreshNodeStats(ctx context.Context) {
+	ticker := time.NewTicker(LoopInterval)
+	defer ticker.Stop()
+	for {
+		for _, n := range m.WorkerNodes {
+			if _, err := n.GetStats(); err != nil {
+				log.Printf("Error refreshing stats for node %s: %v", n.Address, err)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 func (m *Manager) restartTask(t task.Task) error {
 	// restartTask schedules a restart of t on its owning worker
 	// for a task with no owner re-schedules it via the scheduler
