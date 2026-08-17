@@ -139,34 +139,56 @@ func (m *Manager) Close() error {
 }
 
 func (m *Manager) SelectWorker(t *task.Task) (*node.Node, error) {
+	m.portMu.Lock()
+	defer m.portMu.Unlock()
+	return m.selectWorkerLocked(t, "")
+}
+
+// filters candidates using a complete port inventory and the manager's reservations
+// the caller must hold portMu
+func (m *Manager) selectWorkerLocked(t *task.Task, selfOwner string) (*node.Node, error) {
+	if t == nil {
+		return nil, errors.New("cannot select a worker for a nil task")
+	}
+	if err := task.ValidatePortMappings(t.Ports); err != nil {
+		return nil, err
+	}
+
 	candidates := m.Scheduler.SelectCandidateNodes(t, m.WorkerNodes)
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no available candidates match resource requests for task %s", t.ID)
 	}
 
-	if hasPinnedHostPorts(t) {
-		able := make([]*node.Node, 0, len(candidates))
-		for _, c := range candidates {
-			occ := m.fetchWorkerPorts(c)
-			if m.canHost(t, occ, false) {
-				able = append(able, c)
+	able := make([]*node.Node, 0, len(candidates))
+	for _, c := range candidates {
+		excludeOwnPorts := selfOwner != "" && c.Address == selfOwner
+		if hasPinnedHostPorts(t) {
+			occ, err := m.fetchWorkerPorts(c)
+			if err != nil {
+				log.Printf("Skipping worker %s during port admission: %v\n", c.Address, err)
+				continue
+			}
+			if !m.canHost(t, occ, excludeOwnPorts) {
+				continue
 			}
 		}
-		if len(able) == 0 {
-			return nil, fmt.Errorf(
-				"no worker can host task %s: every candidate has a conflicting host port",
-				t.ID,
-			)
+		if m.portReservationConflictLocked(c.Address, t, false) {
+			continue
 		}
-		candidates = able
+		able = append(able, c)
+	}
+	if len(able) == 0 {
+		return nil, fmt.Errorf(
+			"no worker can host task %s: every candidate has a conflicting or unavailable host port",
+			t.ID,
+		)
 	}
 
-	scores := m.Scheduler.Score(t, candidates)
-	selectedNode := m.Scheduler.Pick(scores, candidates)
+	scores := m.Scheduler.Score(t, able)
+	selectedNode := m.Scheduler.Pick(scores, able)
 	if selectedNode == nil {
 		return nil, fmt.Errorf("no candidate able to host task %s (all unscoreable)", t.ID)
 	}
-
 	return selectedNode, nil
 }
 
@@ -186,7 +208,7 @@ func protoPortKey(proto string, port int) string {
 	if proto == "" {
 		proto = "tcp"
 	}
-	return proto + ":" + strconv.Itoa(port)
+	return strings.ToLower(proto) + ":" + strconv.Itoa(port)
 }
 
 func (m *Manager) canHost(t *task.Task, occ *worker.OccupiedPorts, excludeOwnPorts bool) bool {
@@ -194,7 +216,7 @@ func (m *Manager) canHost(t *task.Task, occ *worker.OccupiedPorts, excludeOwnPor
 		return true
 	}
 	if occ == nil {
-		return true
+		return false
 	}
 
 	occupied := make(map[string]struct{}, len(occ.TCP)+len(occ.UDP))
@@ -493,23 +515,35 @@ func (m *Manager) SendWork() {
 		isStop := te.State == task.Completed || t.State == task.Completed
 
 		var w *node.Node
+		reserved := false
 		owner := m.taskWorker(t.ID)
 		if owner != "" {
 			w = m.workerByAddress(owner)
 			if w == nil {
 				log.Printf("Cannot send task %s: assigned worker %q is unavailable\n", t.ID, owner)
+				m.enqueuePending(te)
 				return
+			}
+			if !isStop {
+				reserved = m.reservePorts(w.Address, &t)
+				if !reserved {
+					log.Printf("Cannot reserve host ports for task %s on worker %s\n", t.ID, w.Address)
+					m.markFailed(t.ID, t.RestartCount+1, "host port is reserved by another task")
+					return
+				}
 			}
 		} else if isStop {
 			log.Printf("Cannot stop task %s: no worker owns it\n", t.ID)
 			return
 		} else {
 			var err error
-			w, err = m.SelectWorker(&t)
+			w, err = m.selectAndReserveWorker(&t, "")
 			if err != nil {
 				log.Printf("Error selecting worker for task %s: %v\n", t.ID, err)
+				m.enqueuePending(te)
 				return
 			}
+			reserved = true
 		}
 
 		if !isStop {
@@ -524,6 +558,9 @@ func (m *Manager) SendWork() {
 
 		data, err := json.Marshal(te)
 		if err != nil {
+			if reserved {
+				m.releasePorts(w.Address, &t)
+			}
 			log.Printf("Error raised when marshalling task object %v: %v\n", t, err)
 			return
 		}
@@ -532,6 +569,9 @@ func (m *Manager) SendWork() {
 		// ignoring gosec's G107 since the url is not from external input, but from an internal config
 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 		if err != nil {
+			if reserved {
+				m.releasePorts(w.Address, &t)
+			}
 			fmt.Printf("Error connecting to %v: %v\n", w, err)
 			m.enqueuePending(te)
 			return
@@ -545,6 +585,9 @@ func (m *Manager) SendWork() {
 
 		d := json.NewDecoder(resp.Body)
 		if resp.StatusCode != http.StatusCreated {
+			if reserved {
+				m.releasePorts(w.Address, &t)
+			}
 			hr := handlers.HTTPResponse{}
 			if err := d.Decode(&hr); err != nil {
 				fmt.Printf("Error decoding response: %v\n", err)
@@ -585,6 +628,10 @@ func (m *Manager) SendWork() {
 			}
 		}
 		m.mu.Unlock()
+
+		if isStop {
+			m.releasePorts(w.Address, &t)
+		}
 
 		// the worker api returns the json of the newly created task
 		// in response to POST /tasks
@@ -738,22 +785,16 @@ func (m *Manager) restartTask(t task.Task) error {
 	next.StartTime = time.Time{}
 	next.FinishTime = time.Time{}
 
-	var w *node.Node
-	if owner != "" {
-		ownerNode := m.workerByAddress(owner)
-		if ownerNode != nil && (!hasPinnedHostPorts(&next) || m.canHost(&next, m.fetchWorkerPorts(ownerNode), true)) {
-			w = ownerNode
-		}
+	w, err := m.selectAndReserveWorker(&next, owner)
+	if err != nil {
+		reason := fmt.Sprintf("no available worker to restart: %v", err)
+		m.stopTaskTerminal(t, reason)
+		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
 	}
 
-	if w == nil {
-		selected, err := m.SelectWorker(&next)
-		if err != nil {
-			reason := fmt.Sprintf("no available worker to restart: %v", err)
-			m.stopTaskTerminal(t, reason)
-			return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
-		}
-		w = selected
+	if owner == "" || w.Address != owner {
+		next.ContainerID = ""
+		next.HostPorts = nil
 	}
 
 	te := task.TaskEvent{
@@ -765,6 +806,7 @@ func (m *Manager) restartTask(t task.Task) error {
 
 	data, err := json.Marshal(te)
 	if err != nil {
+		m.releasePorts(w.Address, &next)
 		reason := fmt.Sprintf("unable to marshal restart event: %v", err)
 		m.markFailed(t.ID, t.RestartCount+1, reason)
 		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
@@ -774,6 +816,7 @@ func (m *Manager) restartTask(t task.Task) error {
 	// ignoring gosec's G107 since the url is not from external input, but from an internal config
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
+		m.releasePorts(w.Address, &next)
 		// the worker never saw the restart, so don't burn a restart slot
 		reason := fmt.Sprintf("could not reach worker %s to restart: %v", w.Address, err)
 		m.markFailed(t.ID, t.RestartCount, reason)
@@ -787,6 +830,7 @@ func (m *Manager) restartTask(t task.Task) error {
 
 	d := json.NewDecoder(resp.Body)
 	if resp.StatusCode != http.StatusCreated {
+		m.releasePorts(w.Address, &next)
 		hr := handlers.HTTPResponse{}
 		if err := d.Decode(&hr); err != nil {
 			log.Printf("Error decoding rejection response: %v\n", err)
@@ -821,6 +865,7 @@ func (m *Manager) restartTask(t task.Task) error {
 	m.mu.Unlock()
 
 	if oldOwner != "" && oldOwner != w.Address {
+		m.releasePorts(oldOwner, &t)
 		m.bestEffortStopOldContainer(oldOwner, t)
 	}
 
@@ -925,6 +970,12 @@ func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
 		log.Printf("Error storing terminal task %s: %v\n", t.ID, err)
 	}
 	m.mu.Unlock()
+
+	m.releasePorts(w, &t)
+	if w == "" {
+		log.Printf("No worker owns terminal task %s; cannot send cleanup stop\n", t.ID)
+		return
+	}
 
 	stopTask := t
 	stopTask.State = task.Completed // will be Failed in the end since we sent over the failure reason
