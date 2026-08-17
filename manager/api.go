@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/belyaevedu/philharmonic/node"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/go-chi/chi/v5"
 )
@@ -37,6 +38,12 @@ type TaskView struct {
 	Worker string `json:",omitempty"`
 }
 
+type NodeView struct {
+	node.Snapshot
+	Address string `json:",omitempty"`
+	Role    string `json:",omitempty"`
+}
+
 func (a *Api) initRouter() {
 	a.Router = chi.NewRouter()
 	a.Router.Route("/tasks", func(r chi.Router) {
@@ -45,6 +52,9 @@ func (a *Api) initRouter() {
 		r.Route("/{taskID}", func(r chi.Router) {
 			r.Delete("/", a.StopTaskHandler)
 		})
+	})
+	a.Router.Route("/nodes", func(r chi.Router) {
+		r.Get("/", a.GetNodesHandler)
 	})
 }
 

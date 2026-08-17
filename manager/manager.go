@@ -335,6 +335,24 @@ func (m *Manager) getTaskViews() []TaskView {
 	return views
 }
 
+func (m *Manager) getNodeViews() []NodeView {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	views := make([]NodeView, 0, len(m.WorkerNodes))
+	for _, n := range m.WorkerNodes {
+		if n == nil {
+			continue
+		}
+		views = append(views, NodeView{
+			Snapshot: n.Snapshot(),
+			Address:  n.Address,
+			Role:     n.Role,
+		})
+	}
+	return views
+}
+
 func (m *Manager) getTask(id uuid.UUID) (task.Task, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -630,6 +648,23 @@ func (m *Manager) DoHealthChecks(ctx context.Context) {
 		m.reconcileCheckers(ctx)
 		m.restartFailedTasks()
 		log.Println("Sleeping for 10 seconds")
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *Manager) RefreshNodeStats(ctx context.Context) {
+	ticker := time.NewTicker(LoopInterval)
+	defer ticker.Stop()
+	for {
+		for _, n := range m.WorkerNodes {
+			if _, err := n.GetStats(); err != nil {
+				log.Printf("Error refreshing stats for node %s: %v", n.Address, err)
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return
