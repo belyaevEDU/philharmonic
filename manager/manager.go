@@ -335,6 +335,24 @@ func (m *Manager) getTaskViews() []TaskView {
 	return views
 }
 
+func (m *Manager) getNodeViews() []NodeView {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	views := make([]NodeView, 0, len(m.WorkerNodes))
+	for _, n := range m.WorkerNodes {
+		if n == nil {
+			continue
+		}
+		views = append(views, NodeView{
+			Snapshot: n.Snapshot(),
+			Address:  n.Address,
+			Role:     n.Role,
+		})
+	}
+	return views
+}
+
 func (m *Manager) getTask(id uuid.UUID) (task.Task, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
