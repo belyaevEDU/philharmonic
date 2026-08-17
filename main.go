@@ -107,6 +107,7 @@ func main() {
 	go m.ProcessTasks(ctx)
 	go m.UpdateTasks(ctx)
 	go m.DoHealthChecks(ctx)
+	go m.RefreshNodeStats(ctx)
 
 	go func() {
 		<-ctx.Done()
