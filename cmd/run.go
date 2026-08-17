@@ -52,7 +52,12 @@ The run command starts a new task.`,
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() {
+			err := resp.Body.Close()
+			if err != nil {
+				log.Fatalf("Error raised closing response body: %v\n", err)
+			}
+		}()
 
 		if resp.StatusCode != http.StatusCreated {
 			return fmt.Errorf("manager returned status %d", resp.StatusCode)
