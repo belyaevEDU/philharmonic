@@ -28,6 +28,15 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if te.State != task.Completed && te.Task.State != task.Completed {
+		if err := task.ValidatePortMappings(te.Task.Ports); err != nil {
+			if responseErr := handlers.HttpResponseHelper(w, err.Error(), http.StatusBadRequest); responseErr != nil {
+				log.Printf(handlers.ErrorEncodingJson, responseErr)
+			}
+			return
+		}
+	}
+
 	err = a.Manager.AddTask(te)
 	if err != nil {
 		msg := fmt.Sprintf("Error adding task: %v\n", err)
