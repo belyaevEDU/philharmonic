@@ -322,11 +322,10 @@ func (m *Manager) selectAndReserveWorker(t *task.Task, owner string) (*node.Node
 	if err := task.ValidatePortMappings(t.Ports); err != nil {
 		return nil, err
 	}
-	if owner != "" {
+	if owner != "" { // restart branch
 		ownerNode := m.workerByAddress(owner)
 		if ownerNode != nil && !m.portReservationConflictLocked(owner, t, true) {
 			if !hasPinnedHostPorts(t) {
-				m.reservePortsLocked(owner, t)
 				return ownerNode, nil
 			}
 			occ, err := m.fetchWorkerPorts(ownerNode)
