@@ -110,10 +110,10 @@ func (n *Node) GetStats() (*stats.Stats, error) {
 }
 
 func (n *Node) GetPorts() (*worker.OccupiedPorts, error) {
-	url := fmt.Sprintf("%s/ports", n.Api)
+	url := fmt.Sprintf("http://%s/ports", n.Address)
 	resp, err := http.Get(url) // #nosec G107
 	if err != nil {
-		return nil, fmt.Errorf("error connecting to %v: %w", n.Api, err)
+		return nil, fmt.Errorf("error connecting to %v: %w", n.Address, err)
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -122,12 +122,12 @@ func (n *Node) GetPorts() (*worker.OccupiedPorts, error) {
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("error retrieving ports from %v: status %d", n.Api, resp.StatusCode)
+		return nil, fmt.Errorf("error retrieving ports from %v: status %d", n.Address, resp.StatusCode)
 	}
 
 	var occ worker.OccupiedPorts
 	if err := json.NewDecoder(resp.Body).Decode(&occ); err != nil {
-		return nil, fmt.Errorf("error unmarshalling ports from %v: %w", n.Api, err)
+		return nil, fmt.Errorf("error unmarshalling ports from %v: %w", n.Address, err)
 	}
 	return &occ, nil
 }
