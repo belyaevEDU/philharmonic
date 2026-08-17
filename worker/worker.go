@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/belyaevedu/philharmonic/stats"
 	"github.com/belyaevedu/philharmonic/store"
 	"github.com/belyaevedu/philharmonic/task"
+	"github.com/cakturk/go-netstat/netstat"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
@@ -78,18 +80,17 @@ func (w *Worker) Close() error {
 	return err
 }
 
-func (w *Worker) getTasks() []*task.Task {
+func (w *Worker) listTasks() ([]*task.Task, error) {
 	w.dbMu.RLock()
 	defer w.dbMu.RUnlock()
 
 	if w.Db == nil {
-		return []*task.Task{}
+		return nil, errors.New("worker db is nil")
 	}
 
 	persisted, err := w.Db.List()
 	if err != nil {
-		log.Printf("Error listing worker tasks: %v\n", err)
-		return []*task.Task{}
+		return nil, err
 	}
 
 	tasks := make([]*task.Task, 0, len(persisted))
@@ -99,6 +100,15 @@ func (w *Worker) getTasks() []*task.Task {
 		}
 		copy := *t
 		tasks = append(tasks, &copy)
+	}
+	return tasks, nil
+}
+
+func (w *Worker) getTasks() []*task.Task {
+	tasks, err := w.listTasks()
+	if err != nil {
+		log.Printf("Error listing worker tasks: %v\n", err)
+		return []*task.Task{}
 	}
 	return tasks
 }
@@ -134,32 +144,34 @@ func (w *Worker) setTask(t task.Task) {
 	}
 }
 
-func (w *Worker) AddTask(t task.Task) {
-	// now publishing a scheduled start before putting the task in queue
-	// so that the manager can't get a Failed state from any prev. attempt
-
-	// also saving the last known container ID
-	// so StartTask can then remove that container before creating the replacement
+func (w *Worker) AddTask(t task.Task) error {
+	if t.State != task.Completed {
+		if err := task.ValidatePortMappings(t.Ports); err != nil {
+			return err
+		}
+	}
 
 	if t.State == task.Scheduled {
 		w.dbMu.Lock()
 		if w.Db == nil {
-			log.Printf("Cannot store scheduled worker task %s: db is nil\n", t.ID)
-		} else {
-			if persisted, err := w.Db.Get(t.ID); err == nil {
-				if t.ContainerID == "" {
-					t.ContainerID = persisted.ContainerID
-				}
-				if len(t.HostPorts) == 0 {
-					t.HostPorts = persisted.HostPorts
-				}
-			} else if !errors.Is(err, store.ErrNotFound) {
-				log.Printf("Error getting worker task %s: %v\n", t.ID, err)
+			w.dbMu.Unlock()
+			return errors.New("worker db is nil")
+		}
+		if persisted, err := w.Db.Get(t.ID); err == nil {
+			if t.ContainerID == "" {
+				t.ContainerID = persisted.ContainerID
 			}
-			queued := t
-			if err := w.Db.Put(queued.ID, &queued); err != nil {
-				log.Printf("Error storing worker task %s: %v\n", queued.ID, err)
+			if len(t.HostPorts) == 0 {
+				t.HostPorts = persisted.HostPorts
 			}
+		} else if !errors.Is(err, store.ErrNotFound) {
+			w.dbMu.Unlock()
+			return fmt.Errorf("getting worker task %s: %w", t.ID, err)
+		}
+		queued := t
+		if err := w.Db.Put(queued.ID, &queued); err != nil {
+			w.dbMu.Unlock()
+			return fmt.Errorf("storing worker task %s: %w", queued.ID, err)
 		}
 		w.dbMu.Unlock()
 	}
@@ -167,6 +179,7 @@ func (w *Worker) AddTask(t task.Task) {
 	w.queueMu.Lock()
 	w.Queue.Enqueue(t)
 	w.queueMu.Unlock()
+	return nil
 }
 
 func (w *Worker) queueLen() int {
@@ -263,7 +276,16 @@ func (w *Worker) runTask() task.DockerResult {
 }
 
 func (w *Worker) StartTask(t task.Task) task.DockerResult {
+	if err := task.ValidatePortMappings(t.Ports); err != nil {
+		t.State = task.Failed
+		t.HostPorts = nil
+		t.FailureReason = err.Error()
+		w.setTask(t)
+		return task.DockerResult{Error: err}
+	}
+
 	t.StartTime = time.Now().UTC()
+	t.HostPorts = nil
 
 	config := task.NewConfig(&t)
 
@@ -504,6 +526,7 @@ func (w *Worker) updateTasks() {
 		updated := *persisted
 		if resp.Response == nil {
 			updated.State = task.Failed
+			updated.HostPorts = nil
 			if resp.Error != nil {
 				updated.FailureReason = fmt.Sprintf("container inspection failed: %v", resp.Error)
 			} else {
@@ -518,6 +541,7 @@ func (w *Worker) updateTasks() {
 
 		if resp.Response.State == nil {
 			updated.State = task.Failed
+			updated.HostPorts = nil
 			updated.FailureReason = "container inspection returned no state"
 			if err := w.Db.Put(runningTask.ID, &updated); err != nil {
 				log.Printf("error storing failed task %s: %v\n", runningTask.ID, err)
@@ -526,6 +550,7 @@ func (w *Worker) updateTasks() {
 			continue
 		}
 
+		updated.HostPorts = nil
 		if resp.Response.State.Status == container.StateExited {
 			log.Printf(
 				"Container for task %s in non-running state %s",
@@ -563,4 +588,139 @@ func (w *Worker) UpdateTasks(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+type OccupiedPorts struct {
+	TCP []int `json:"tcp,omitempty"`
+	UDP []int `json:"udp,omitempty"`
+}
+
+func (w *Worker) HostPortsWithError() (OccupiedPorts, error) {
+	return w.hostPorts()
+}
+
+func (w *Worker) hostPorts() (OccupiedPorts, error) {
+	var occ OccupiedPorts
+	var errs []error
+	tcpSeen := make(map[int]struct{})
+	udpSeen := make(map[int]struct{})
+
+	addTCP := func(port int) {
+		if port != 0 {
+			if _, exists := tcpSeen[port]; !exists {
+				tcpSeen[port] = struct{}{}
+				occ.TCP = append(occ.TCP, port)
+			}
+		}
+	}
+	addUDP := func(port int) {
+		if port != 0 {
+			if _, exists := udpSeen[port]; !exists {
+				udpSeen[port] = struct{}{}
+				occ.UDP = append(occ.UDP, port)
+			}
+		}
+	}
+
+	tcpListen := func(s *netstat.SockTabEntry) bool {
+		return s.State == netstat.Listen && s.LocalAddr != nil
+	}
+	for _, fn := range []func(netstat.AcceptFn) ([]netstat.SockTabEntry, error){
+		netstat.TCPSocks, netstat.TCP6Socks,
+	} {
+		entries, err := fn(tcpListen)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("reading TCP listening sockets: %w", err))
+			continue
+		}
+		for _, e := range entries {
+			if e.LocalAddr != nil {
+				addTCP(int(e.LocalAddr.Port))
+			}
+		}
+	}
+
+	for _, fn := range []func(netstat.AcceptFn) ([]netstat.SockTabEntry, error){
+		netstat.UDPSocks, netstat.UDP6Socks,
+	} {
+		entries, err := fn(netstat.NoopFilter)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("reading UDP sockets: %w", err))
+			continue
+		}
+		for _, e := range entries {
+			if e.LocalAddr != nil {
+				addUDP(int(e.LocalAddr.Port))
+			}
+		}
+	}
+
+	// a scheduled task is a reservation even before docker creates its container
+	persistedTasks, err := w.listTasks()
+	if err != nil {
+		errs = append(errs, fmt.Errorf("listing worker tasks: %w", err))
+	}
+	for _, persisted := range persistedTasks {
+		if persisted.State != task.Scheduled && persisted.State != task.Running {
+			continue
+		}
+
+		var mappings []task.PortMapping
+		if persisted.State == task.Scheduled {
+			mappings = persisted.Ports
+		} else {
+			pinned := false
+			for _, pm := range persisted.Ports {
+				if pm.HostPort != 0 {
+					pinned = true
+					break
+				}
+			}
+			if !pinned {
+				continue
+			}
+
+			// do not trust the last persisted HostPorts for a running task.
+			// an exited container may leave that field behind and cause the manager
+			// to self-exclude a port now owned by some other process.
+			// inspecting also catches Docker NAT bindings that have no host LISTEN socket
+			inspect := w.InspectTask(*persisted)
+			if inspect.Error != nil || inspect.Response == nil || inspect.Response.State == nil {
+				if inspect.Error != nil {
+					errs = append(errs, fmt.Errorf("inspecting task %s: %w", persisted.ID, inspect.Error))
+				} else {
+					errs = append(errs, fmt.Errorf("inspecting task %s returned no container state", persisted.ID))
+				}
+				continue
+			}
+			if inspect.Response.State.Status != container.StateRunning &&
+				inspect.Response.State.Status != container.StateRestarting {
+				// updateTasks will reconcile this stale Running record
+				continue
+			}
+			if inspect.Response.NetworkSettings == nil {
+				errs = append(errs, fmt.Errorf("inspecting task %s returned no network settings", persisted.ID))
+				continue
+			}
+			mappings = task.PortMappingsFromPortMap(inspect.Response.NetworkSettings.Ports)
+		}
+
+		for _, pm := range mappings {
+			if pm.HostPort == 0 {
+				continue
+			}
+			switch pm.Protocol {
+			case "", "tcp":
+				addTCP(pm.HostPort)
+			case "udp":
+				addUDP(pm.HostPort)
+			default:
+				return OccupiedPorts{}, errors.New("non ''/'tcp'/'udp' mapping entry ended up in the portmappings slice")
+			}
+		}
+	}
+
+	sort.Ints(occ.TCP)
+	sort.Ints(occ.UDP)
+	return occ, errors.Join(errs...)
 }

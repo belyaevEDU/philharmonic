@@ -39,6 +39,10 @@ func (a *Api) initRouter() {
 	a.Router.Route("/stats", func(r chi.Router) {
 		r.Get("/", a.GetStatsHandler)
 	})
+
+	a.Router.Route("/ports", func(r chi.Router) {
+		r.Get("/", a.GetPortsHandler)
+	})
 }
 
 func (a *Api) Start() error {

@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,14 +12,17 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/belyaevedu/philharmonic/stats"
 	"github.com/belyaevedu/philharmonic/utils"
+	"github.com/belyaevedu/philharmonic/worker"
 )
 
 const (
 	StatsQueryMaxRetries  = 5
 	StatsQuerySleepPeriod = 5
+	PortsQueryTimeout     = 5 * time.Second
 )
 
 type Node struct {
@@ -106,6 +110,35 @@ func (n *Node) GetStats() (*stats.Stats, error) {
 	n.mu.Unlock()
 
 	return &s, nil
+}
+
+func (n *Node) GetPorts() (*worker.OccupiedPorts, error) {
+	url := fmt.Sprintf("http://%s/ports", n.Address)
+	ctx, cancel := context.WithTimeout(context.Background(), PortsQueryTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error building ports request for %v: %w", n.Address, err)
+	}
+	resp, err := http.DefaultClient.Do(req) // #nosec G107
+	if err != nil {
+		return nil, fmt.Errorf("error connecting to %v: %w", n.Address, err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Error closing response body: %v\n", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("error retrieving ports from %v: status %d", n.Address, resp.StatusCode)
+	}
+
+	var occ worker.OccupiedPorts
+	if err := json.NewDecoder(resp.Body).Decode(&occ); err != nil {
+		return nil, fmt.Errorf("error unmarshalling ports from %v: %w", n.Address, err)
+	}
+	return &occ, nil
 }
 
 // a concurrency-safe point-in-time copy of the resource fields

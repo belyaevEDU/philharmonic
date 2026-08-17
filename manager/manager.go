@@ -41,14 +41,16 @@ const (
 )
 
 type Manager struct {
-	Pending       queue.Queue
-	TaskDb        store.Store[task.Task]
-	EventDb       store.Store[task.TaskEvent]
-	WorkerTaskMap map[string][]uuid.UUID
-	TaskWorkerMap map[uuid.UUID]string
-	mu            sync.RWMutex
-	pendingMu     sync.Mutex
-	checkers      map[uuid.UUID]context.CancelFunc
+	Pending          queue.Queue
+	TaskDb           store.Store[task.Task]
+	EventDb          store.Store[task.TaskEvent]
+	WorkerTaskMap    map[string][]uuid.UUID
+	TaskWorkerMap    map[uuid.UUID]string
+	mu               sync.RWMutex
+	pendingMu        sync.Mutex
+	portMu           sync.Mutex
+	checkers         map[uuid.UUID]context.CancelFunc
+	portReservations map[string]map[string]uuid.UUID
 
 	WorkerNodes []*node.Node
 	Scheduler   scheduler.Scheduler
@@ -80,12 +82,13 @@ func New(workers []string, schedulerType, dbType string) (*Manager, error) {
 	}
 
 	m := Manager{
-		Pending:       *queue.New(),
-		WorkerTaskMap: workerTaskMap,
-		TaskWorkerMap: taskWorkerMap,
-		checkers:      make(map[uuid.UUID]context.CancelFunc),
-		WorkerNodes:   nodes,
-		Scheduler:     s,
+		Pending:          *queue.New(),
+		WorkerTaskMap:    workerTaskMap,
+		TaskWorkerMap:    taskWorkerMap,
+		checkers:         make(map[uuid.UUID]context.CancelFunc),
+		portReservations: make(map[string]map[string]uuid.UUID),
+		WorkerNodes:      nodes,
+		Scheduler:        s,
 	}
 
 	var ts store.Store[task.Task]
@@ -135,23 +138,99 @@ func (m *Manager) Close() error {
 }
 
 func (m *Manager) SelectWorker(t *task.Task) (*node.Node, error) {
+	m.portMu.Lock()
+	defer m.portMu.Unlock()
+	return m.selectWorkerLocked(t, "")
+}
+
+// filters candidates using a complete port inventory and the manager's reservations
+// the caller must hold portMu
+func (m *Manager) selectWorkerLocked(t *task.Task, selfOwner string) (*node.Node, error) {
+	if t == nil {
+		return nil, errors.New("cannot select a worker for a nil task")
+	}
+	if err := task.ValidatePortMappings(t.Ports); err != nil {
+		return nil, err
+	}
+
 	candidates := m.Scheduler.SelectCandidateNodes(t, m.WorkerNodes)
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no available candidates match resource requests for task %s", t.ID)
 	}
 
-	scores := m.Scheduler.Score(t, candidates)
-	selectedNode := m.Scheduler.Pick(scores, candidates)
+	able := make([]*node.Node, 0, len(candidates))
+	for _, c := range candidates {
+		excludeOwnPorts := selfOwner != "" && c.Address == selfOwner
+		if hasPinnedHostPorts(t) {
+			occ, err := m.fetchWorkerPorts(c)
+			if err != nil {
+				log.Printf("Skipping worker %s during port admission: %v\n", c.Address, err)
+				continue
+			}
+			if !m.canHost(t, occ, excludeOwnPorts) {
+				continue
+			}
+		}
+		if m.portReservationConflictLocked(c.Address, t, false) {
+			continue
+		}
+		able = append(able, c)
+	}
+	if len(able) == 0 {
+		return nil, fmt.Errorf(
+			"no worker can host task %s: every candidate has a conflicting or unavailable host port",
+			t.ID,
+		)
+	}
+
+	scores := m.Scheduler.Score(t, able)
+	selectedNode := m.Scheduler.Pick(scores, able)
 	if selectedNode == nil {
 		return nil, fmt.Errorf("no candidate able to host task %s (all unscoreable)", t.ID)
 	}
-
 	return selectedNode, nil
 }
 
+func (m *Manager) selectAndReserveWorker(t *task.Task, owner string) (*node.Node, error) {
+	m.portMu.Lock()
+	defer m.portMu.Unlock()
+
+	if err := task.ValidatePortMappings(t.Ports); err != nil {
+		return nil, err
+	}
+	if owner != "" { // restart branch
+		ownerNode := m.workerByAddress(owner)
+		if ownerNode != nil && !m.portReservationConflictLocked(owner, t, true) {
+			if !hasPinnedHostPorts(t) {
+				return ownerNode, nil
+			}
+			occ, err := m.fetchWorkerPorts(ownerNode)
+			if err == nil && m.canHost(t, occ, true) {
+				m.reservePortsLocked(owner, t)
+				return ownerNode, nil
+			}
+			if err != nil {
+				log.Printf("Cannot use owning worker %s during port admission: %v\n", owner, err)
+			}
+		}
+	}
+
+	selected, err := m.selectWorkerLocked(t, "")
+	if err != nil {
+		return nil, err
+	}
+	m.reservePortsLocked(selected.Address, t)
+	return selected, nil
+}
+
 func (m *Manager) AddTask(te task.TaskEvent) error {
-	// A task ID identifies one task lifecycle
+	// A task ID identifies one task lifecycle.
+	// stops are allowed through even for legacy tasks whose mappings are no longer accepted,
+	// so they can still clean up an existing container
 	if te.State != task.Completed && te.Task.State != task.Completed {
+		if err := task.ValidatePortMappings(te.Task.Ports); err != nil {
+			return err
+		}
 		m.mu.Lock()
 		if m.TaskDb == nil {
 			m.mu.Unlock()
@@ -301,23 +380,35 @@ func (m *Manager) SendWork() {
 		isStop := te.State == task.Completed || t.State == task.Completed
 
 		var w *node.Node
+		reserved := false
 		owner := m.taskWorker(t.ID)
 		if owner != "" {
 			w = m.workerByAddress(owner)
 			if w == nil {
 				log.Printf("Cannot send task %s: assigned worker %q is unavailable\n", t.ID, owner)
+				m.enqueuePending(te)
 				return
+			}
+			if !isStop {
+				reserved = m.reservePorts(w.Address, &t)
+				if !reserved {
+					log.Printf("Cannot reserve host ports for task %s on worker %s\n", t.ID, w.Address)
+					m.markFailed(t.ID, t.RestartCount+1, "host port is reserved by another task")
+					return
+				}
 			}
 		} else if isStop {
 			log.Printf("Cannot stop task %s: no worker owns it\n", t.ID)
 			return
 		} else {
 			var err error
-			w, err = m.SelectWorker(&t)
+			w, err = m.selectAndReserveWorker(&t, "")
 			if err != nil {
 				log.Printf("Error selecting worker for task %s: %v\n", t.ID, err)
+				m.enqueuePending(te)
 				return
 			}
+			reserved = true
 		}
 
 		if !isStop {
@@ -332,6 +423,9 @@ func (m *Manager) SendWork() {
 
 		data, err := json.Marshal(te)
 		if err != nil {
+			if reserved {
+				m.releasePorts(w.Address, &t)
+			}
 			log.Printf("Error raised when marshalling task object %v: %v\n", t, err)
 			return
 		}
@@ -340,6 +434,9 @@ func (m *Manager) SendWork() {
 		// ignoring gosec's G107 since the url is not from external input, but from an internal config
 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 		if err != nil {
+			if reserved {
+				m.releasePorts(w.Address, &t)
+			}
 			fmt.Printf("Error connecting to %v: %v\n", w, err)
 			m.enqueuePending(te)
 			return
@@ -353,6 +450,9 @@ func (m *Manager) SendWork() {
 
 		d := json.NewDecoder(resp.Body)
 		if resp.StatusCode != http.StatusCreated {
+			if reserved {
+				m.releasePorts(w.Address, &t)
+			}
 			hr := handlers.HTTPResponse{}
 			if err := d.Decode(&hr); err != nil {
 				fmt.Printf("Error decoding response: %v\n", err)
@@ -393,6 +493,10 @@ func (m *Manager) SendWork() {
 			}
 		}
 		m.mu.Unlock()
+
+		if isStop {
+			m.releasePorts(w.Address, &t)
+		}
 
 		// the worker api returns the json of the newly created task
 		// in response to POST /tasks
@@ -546,22 +650,16 @@ func (m *Manager) restartTask(t task.Task) error {
 	next.StartTime = time.Time{}
 	next.FinishTime = time.Time{}
 
-	var w *node.Node
-	if owner != "" {
-		w = m.workerByAddress(owner)
-		if w == nil {
-			reason := fmt.Sprintf("assigned worker %q is unavailable", owner)
-			m.markFailed(t.ID, t.RestartCount+1, reason)
-			return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
-		}
-	} else {
-		var err error
-		w, err = m.SelectWorker(&next)
-		if err != nil {
-			reason := fmt.Sprintf("no available worker to restart: %v", err)
-			m.markFailed(t.ID, t.RestartCount+1, reason)
-			return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
-		}
+	w, err := m.selectAndReserveWorker(&next, owner)
+	if err != nil {
+		reason := fmt.Sprintf("no available worker to restart: %v", err)
+		m.stopTaskTerminal(t, reason)
+		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
+	}
+
+	if owner == "" || w.Address != owner {
+		next.ContainerID = ""
+		next.HostPorts = nil
 	}
 
 	te := task.TaskEvent{
@@ -573,6 +671,7 @@ func (m *Manager) restartTask(t task.Task) error {
 
 	data, err := json.Marshal(te)
 	if err != nil {
+		m.releasePorts(w.Address, &next)
 		reason := fmt.Sprintf("unable to marshal restart event: %v", err)
 		m.markFailed(t.ID, t.RestartCount+1, reason)
 		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
@@ -582,6 +681,7 @@ func (m *Manager) restartTask(t task.Task) error {
 	// ignoring gosec's G107 since the url is not from external input, but from an internal config
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
+		m.releasePorts(w.Address, &next)
 		// the worker never saw the restart, so don't burn a restart slot
 		reason := fmt.Sprintf("could not reach worker %s to restart: %v", w.Address, err)
 		m.markFailed(t.ID, t.RestartCount, reason)
@@ -595,6 +695,7 @@ func (m *Manager) restartTask(t task.Task) error {
 
 	d := json.NewDecoder(resp.Body)
 	if resp.StatusCode != http.StatusCreated {
+		m.releasePorts(w.Address, &next)
 		hr := handlers.HTTPResponse{}
 		if err := d.Decode(&hr); err != nil {
 			log.Printf("Error decoding rejection response: %v\n", err)
@@ -610,7 +711,11 @@ func (m *Manager) restartTask(t task.Task) error {
 	}
 
 	m.mu.Lock()
-	if m.TaskWorkerMap[t.ID] != w.Address {
+	oldOwner := m.TaskWorkerMap[t.ID]
+	if oldOwner != w.Address {
+		if oldOwner != "" {
+			m.removeTaskID(oldOwner, t.ID)
+		}
 		m.WorkerTaskMap[w.Address] = append(m.WorkerTaskMap[w.Address], t.ID)
 	}
 	m.TaskWorkerMap[t.ID] = w.Address
@@ -624,15 +729,30 @@ func (m *Manager) restartTask(t task.Task) error {
 	}
 	m.mu.Unlock()
 
+	if oldOwner != "" && oldOwner != w.Address {
+		m.releasePorts(oldOwner, &t)
+		m.bestEffortStopOldContainer(oldOwner, t)
+	}
+
 	newTask := task.Task{}
 	if err := d.Decode(&newTask); err != nil {
 		log.Printf("Error decoding restart response: %v\n", err)
-		// ownership already commited via 201, so we dont really care about a json decoding error
+		// ownership already committed via 201, so we dont really care about a json decoding error
 		return nil
 	}
 
 	log.Printf("Task restarted: %#v\n", newTask)
 	return nil
+}
+
+func (m *Manager) removeTaskID(worker string, id uuid.UUID) {
+	tasks := m.WorkerTaskMap[worker]
+	for i, tid := range tasks {
+		if tid == id {
+			m.WorkerTaskMap[worker] = append(tasks[:i], tasks[i+1:]...)
+			return
+		}
+	}
 }
 
 // markFailed records a task as Failed with the given restart count and reason
@@ -667,6 +787,42 @@ func (m *Manager) markFailed(id uuid.UUID, restartCount int, reason string) {
 	}
 }
 
+// used when a restart relocates a task to a different
+// worker so the previous container isn't orphaned.
+// errors only logged
+func (m *Manager) bestEffortStopOldContainer(addr string, t task.Task) {
+	if t.ContainerID == "" {
+		return
+	}
+	stopTask := t
+	stopTask.State = task.Completed
+	te := task.TaskEvent{
+		ID:        uuid.New(),
+		State:     task.Completed,
+		Timestamp: time.Now(),
+		Task:      stopTask,
+	}
+	data, err := json.Marshal(te)
+	if err != nil {
+		log.Printf("Error marshalling cleanup stop for task %s: %v", t.ID, err)
+		return
+	}
+	url := fmt.Sprintf(WorkerTasksURL, addr)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
+	if err != nil {
+		log.Printf("Could not reach old owner %s to stop orphaned container %s: %v", addr, t.ContainerID, err)
+		return
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Error closing response body: %v", err)
+		}
+	}()
+	if resp.StatusCode != http.StatusCreated {
+		log.Printf("Old owner %s responded %d stopping orphaned container %s", addr, resp.StatusCode, t.ContainerID)
+	}
+}
+
 func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
 	m.mu.Lock()
 	w := m.TaskWorkerMap[t.ID]
@@ -679,6 +835,12 @@ func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
 		log.Printf("Error storing terminal task %s: %v\n", t.ID, err)
 	}
 	m.mu.Unlock()
+
+	m.releasePorts(w, &t)
+	if w == "" {
+		log.Printf("No worker owns terminal task %s; cannot send cleanup stop\n", t.ID)
+		return
+	}
 
 	stopTask := t
 	stopTask.State = task.Completed // will be Failed in the end since we sent over the failure reason

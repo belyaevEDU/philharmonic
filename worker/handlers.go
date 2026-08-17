@@ -27,7 +27,21 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.Worker.AddTask(te.Task)
+	if te.State != task.Completed && te.Task.State != task.Completed {
+		if err := task.ValidatePortMappings(te.Task.Ports); err != nil {
+			if responseErr := handlers.HttpResponseHelper(w, err.Error(), http.StatusBadRequest); responseErr != nil {
+				log.Printf(handlers.ErrorEncodingJson, responseErr)
+			}
+			return
+		}
+	}
+
+	if err := a.Worker.AddTask(te.Task); err != nil {
+		if responseErr := handlers.HttpResponseHelper(w, err.Error(), http.StatusInternalServerError); responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
+		}
+		return
+	}
 	log.Printf("Added task %v\n", te.Task.ID)
 	w.WriteHeader(http.StatusCreated)
 	err = json.NewEncoder(w).Encode(te.Task)
@@ -69,7 +83,12 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 	taskCopy := taskToStop
 	taskCopy.State = task.Completed
-	a.Worker.AddTask(taskCopy)
+	if err := a.Worker.AddTask(taskCopy); err != nil {
+		if responseErr := handlers.HttpResponseHelper(w, err.Error(), http.StatusInternalServerError); responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
+		}
+		return
+	}
 
 	log.Printf("Added task %v to stop container %v\n", taskToStop.ID, taskToStop.ContainerID)
 	w.WriteHeader(http.StatusNoContent)
@@ -85,6 +104,23 @@ func (a *Api) GetStatsHandler(w http.ResponseWriter, r *http.Request) {
 
 	err := json.NewEncoder(w).Encode(stats)
 	if err != nil {
+		log.Printf(handlers.ErrorEncodingJson, err)
+	}
+}
+
+func (a *Api) GetPortsHandler(w http.ResponseWriter, r *http.Request) {
+	ports, err := a.Worker.HostPortsWithError()
+	if err != nil {
+		msg := fmt.Sprintf("error reading occupied host ports: %v", err)
+		if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusInternalServerError); responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(ports); err != nil {
 		log.Printf(handlers.ErrorEncodingJson, err)
 	}
 }

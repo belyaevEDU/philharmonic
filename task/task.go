@@ -143,41 +143,82 @@ func NewConfig(t *Task) *Config {
 	}
 }
 
-func (c *Config) dockerPorts() (network.PortSet, network.PortMap, error) {
-	exposed := network.PortSet{}
-	bindings := network.PortMap{}
+// SCTP is intentionally unsupported, since the worker has no reliable SCTP inventory
+func ValidatePortMappings(mappings []PortMapping) error {
+	containerPorts := make(map[network.Port]struct{}, len(mappings))
+	hostPorts := make(map[string]struct{}, len(mappings))
 
-	for _, pm := range c.Ports {
+	for _, pm := range mappings {
 		if pm.ContainerPort < 1 || pm.ContainerPort > 65535 {
-			return nil, nil, fmt.Errorf("invalid container port %d in port mapping", pm.ContainerPort)
+			return fmt.Errorf("invalid container port %d in port mapping", pm.ContainerPort)
 		}
 		if pm.HostPort < 0 || pm.HostPort > 65535 {
-			return nil, nil, fmt.Errorf("invalid host port %d in port mapping", pm.HostPort)
+			return fmt.Errorf("invalid host port %d in port mapping", pm.HostPort)
 		}
 
 		proto := network.TCP
 		if pm.Protocol != "" {
 			proto = pm.Protocol
 		}
-
-		if proto != network.TCP && proto != network.UDP && proto != network.SCTP {
-			return nil, nil, fmt.Errorf(
-				"invalid protocol %s in port mapping (want tcp, udp or sctp)", pm.Protocol,
-			)
+		if proto == network.SCTP {
+			return fmt.Errorf("sctp port mappings are not supported")
+		}
+		if proto != network.TCP && proto != network.UDP {
+			return fmt.Errorf("invalid protocol %s in port mapping (want tcp or udp)", pm.Protocol)
 		}
 
-		port, ok := network.PortFrom(uint16(pm.ContainerPort), proto)
+		port, ok := network.PortFrom(clampToUint16(pm.ContainerPort), proto)
 		if !ok {
-			return nil, nil, fmt.Errorf("invalid port mapping %d/%s", pm.ContainerPort, proto)
+			return fmt.Errorf("invalid port mapping %d/%s", pm.ContainerPort, proto)
+		}
+		if _, exists := containerPorts[port]; exists {
+			return fmt.Errorf("duplicate container port mapping %d/%s", pm.ContainerPort, proto)
+		}
+		containerPorts[port] = struct{}{}
+
+		if pm.HostPort != 0 {
+			key := string(proto) + ":" + strconv.Itoa(pm.HostPort)
+			if _, exists := hostPorts[key]; exists {
+				return fmt.Errorf("duplicate host port mapping %d/%s", pm.HostPort, proto)
+			}
+			hostPorts[key] = struct{}{}
+		}
+	}
+	return nil
+}
+
+// gosec G115 fix: preventing overflow
+func clampToUint16(i int) uint16 {
+	if i < 0 {
+		return 0
+	}
+	if i > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	return uint16(i)
+}
+
+func (c *Config) dockerPorts() (network.PortSet, network.PortMap, error) {
+	if err := ValidatePortMappings(c.Ports); err != nil {
+		return nil, nil, err
+	}
+
+	exposed := network.PortSet{}
+	bindings := network.PortMap{}
+
+	for _, pm := range c.Ports {
+		proto := network.TCP
+		if pm.Protocol != "" {
+			proto = pm.Protocol
 		}
 
+		port, _ := network.PortFrom(clampToUint16(pm.ContainerPort), proto)
 		exposed[port] = struct{}{}
 
 		hostPort := ""
 		if pm.HostPort != 0 {
 			hostPort = strconv.Itoa(pm.HostPort)
 		}
-
 		bindings[port] = []network.PortBinding{{HostPort: hostPort}}
 	}
 
