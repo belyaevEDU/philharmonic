@@ -250,14 +250,6 @@ func (m *Manager) fetchWorkerPorts(n *node.Node) (*worker.OccupiedPorts, error) 
 	return n.GetPorts()
 }
 
-func reservationScope(workerAddress string) string {
-	host, _, err := net.SplitHostPort(workerAddress)
-	if err == nil {
-		return strings.ToLower(host)
-	}
-	return strings.ToLower(workerAddress)
-}
-
 func requestedPortKeys(t *task.Task) []string {
 	if t == nil {
 		return nil
@@ -272,7 +264,7 @@ func requestedPortKeys(t *task.Task) []string {
 }
 
 func (m *Manager) portReservationConflictLocked(workerAddress string, t *task.Task, allowOwn bool) bool {
-	reservations := m.portReservations[reservationScope(workerAddress)]
+	reservations := m.portReservations[workerAddress]
 	for _, key := range requestedPortKeys(t) {
 		if owner, exists := reservations[key]; exists && (owner != t.ID || !allowOwn) {
 			return true
@@ -289,11 +281,10 @@ func (m *Manager) reservePortsLocked(workerAddress string, t *task.Task) {
 	if m.portReservations == nil {
 		m.portReservations = make(map[string]map[string]uuid.UUID)
 	}
-	scope := reservationScope(workerAddress)
-	reservations := m.portReservations[scope]
+	reservations := m.portReservations[workerAddress]
 	if reservations == nil {
 		reservations = make(map[string]uuid.UUID)
-		m.portReservations[scope] = reservations
+		m.portReservations[workerAddress] = reservations
 	}
 	for _, key := range keys {
 		reservations[key] = t.ID
@@ -313,15 +304,14 @@ func (m *Manager) reservePorts(workerAddress string, t *task.Task) bool {
 func (m *Manager) releasePorts(workerAddress string, t *task.Task) {
 	m.portMu.Lock()
 	defer m.portMu.Unlock()
-	scope := reservationScope(workerAddress)
-	reservations := m.portReservations[scope]
+	reservations := m.portReservations[workerAddress]
 	for _, key := range requestedPortKeys(t) {
 		if owner, exists := reservations[key]; exists && owner == t.ID {
 			delete(reservations, key)
 		}
 	}
 	if len(reservations) == 0 {
-		delete(m.portReservations, scope)
+		delete(m.portReservations, workerAddress)
 	}
 }
 
