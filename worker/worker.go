@@ -265,7 +265,16 @@ func (w *Worker) runTask() task.DockerResult {
 }
 
 func (w *Worker) StartTask(t task.Task) task.DockerResult {
+	if err := task.ValidatePortMappings(t.Ports); err != nil {
+		t.State = task.Failed
+		t.HostPorts = nil
+		t.FailureReason = err.Error()
+		w.setTask(t)
+		return task.DockerResult{Error: err}
+	}
+
 	t.StartTime = time.Now().UTC()
+	t.HostPorts = nil
 
 	config := task.NewConfig(&t)
 
