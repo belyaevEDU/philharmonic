@@ -19,25 +19,13 @@ var workerCmd = &cobra.Command{
 The worker runs tasks via Docker and responds to manager's requests about task states.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		host, err := cmd.Flags().GetString("host")
-		if err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
+		errOsExit(err)
 		port, err := cmd.Flags().GetInt("port")
-		if err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
+		errOsExit(err)
 		name, err := cmd.Flags().GetString("name")
-		if err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
+		errOsExit(err)
 		dbType, err := cmd.Flags().GetString("dbtype")
-		if err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
+		errOsExit(err)
 
 		log.Println("Starting worker...")
 		w, err := worker.New(name, dbType)

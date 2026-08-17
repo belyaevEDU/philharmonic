@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"log"
-	"os"
 
 	"github.com/belyaevedu/philharmonic/manager"
 	"github.com/spf13/cobra"
@@ -21,38 +20,20 @@ The manager controls the orchestration system. Is responsible for:
 - Periodically polling workers to get task updates`,
 	Run: func(cmd *cobra.Command, args []string) {
 		host, err := cmd.Flags().GetString("host")
-		if err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
+		errOsExit(err) // I Wish There Was A Better Way To Do This...
 		port, err := cmd.Flags().GetInt("port")
-		if err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
+		errOsExit(err)
 		workers, err := cmd.Flags().GetStringSlice("workers")
-		if err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
+		errOsExit(err)
 		scheduler, err := cmd.Flags().GetString("scheduler")
-		if err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
+		errOsExit(err)
 		dbType, err := cmd.Flags().GetString("dbtype")
-		if err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
+		errOsExit(err)
 
 		log.Println("Starting manager...")
 
 		m, err := manager.New(workers, scheduler, dbType)
-		if err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
+		errOsExit(err)
 
 		ctx := context.Background()
 		go m.ProcessTasks(ctx)
@@ -60,10 +41,8 @@ The manager controls the orchestration system. Is responsible for:
 		go m.DoHealthChecks(ctx)
 
 		api := manager.Api{Address: host, Port: port, Manager: m}
-		if err := api.Start(); err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
+		err = api.Start()
+		errOsExit(err)
 	},
 }
 
