@@ -189,6 +189,9 @@ func ValidatePortMappings(mappings []PortMapping) error {
 
 // gosec G115 fix: preventing overflow
 func clampToUint16(i int) uint16 {
+	if i < 0 {
+		return 0
+	}
 	if i > math.MaxUint16 {
 		return math.MaxUint16
 	}
