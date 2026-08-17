@@ -18,22 +18,35 @@ The manager controls the orchestration system. Is responsible for:
 - Scheduling tasks onto worker nodes
 - Rescheduling tasks in the event of a node failure
 - Periodically polling workers to get task updates`,
-	Run: func(cmd *cobra.Command, args []string) {
+	SilenceUsage: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		host, err := cmd.Flags().GetString("host")
-		errOsExit(err) // I Wish There Was A Better Way To Do This...
+		if err != nil {
+			return err
+		}
 		port, err := cmd.Flags().GetInt("port")
-		errOsExit(err)
+		if err != nil {
+			return err
+		}
 		workers, err := cmd.Flags().GetStringSlice("workers")
-		errOsExit(err)
+		if err != nil {
+			return err
+		}
 		scheduler, err := cmd.Flags().GetString("scheduler")
-		errOsExit(err)
+		if err != nil {
+			return err
+		}
 		dbType, err := cmd.Flags().GetString("dbtype")
-		errOsExit(err)
+		if err != nil {
+			return err
+		}
 
 		log.Println("Starting manager...")
 
 		m, err := manager.New(workers, scheduler, dbType)
-		errOsExit(err)
+		if err != nil {
+			return err
+		}
 
 		ctx := context.Background()
 		go m.ProcessTasks(ctx)
@@ -41,8 +54,7 @@ The manager controls the orchestration system. Is responsible for:
 		go m.DoHealthChecks(ctx)
 
 		api := manager.Api{Address: host, Port: port, Manager: m}
-		err = api.Start()
-		errOsExit(err)
+		return api.Start()
 	},
 }
 

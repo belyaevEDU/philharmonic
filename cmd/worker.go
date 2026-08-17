@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 
 	"github.com/belyaevedu/philharmonic/worker"
 	"github.com/google/uuid"
@@ -17,21 +16,29 @@ var workerCmd = &cobra.Command{
 	Long: `philharmonic worker command.
 
 The worker runs tasks via Docker and responds to manager's requests about task states.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	SilenceUsage: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		host, err := cmd.Flags().GetString("host")
-		errOsExit(err)
+		if err != nil {
+			return err
+		}
 		port, err := cmd.Flags().GetInt("port")
-		errOsExit(err)
+		if err != nil {
+			return err
+		}
 		name, err := cmd.Flags().GetString("name")
-		errOsExit(err)
+		if err != nil {
+			return err
+		}
 		dbType, err := cmd.Flags().GetString("dbtype")
-		errOsExit(err)
+		if err != nil {
+			return err
+		}
 
 		log.Println("Starting worker...")
 		w, err := worker.New(name, dbType)
 		if err != nil {
-			log.Println(err)
-			os.Exit(1)
+			return err
 		}
 
 		ctx := context.Background()
@@ -40,10 +47,7 @@ The worker runs tasks via Docker and responds to manager's requests about task s
 		go w.UpdateTasks(ctx)
 
 		api := worker.Api{Address: host, Port: port, Worker: w}
-		if err := api.Start(); err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
+		return api.Start()
 	},
 }
 
