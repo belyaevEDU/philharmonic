@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/belyaevedu/philharmonic/stats"
 	"github.com/belyaevedu/philharmonic/utils"
@@ -20,6 +22,7 @@ import (
 const (
 	StatsQueryMaxRetries  = 5
 	StatsQuerySleepPeriod = 5
+	PortsQueryTimeout     = 5 * time.Second
 )
 
 type Node struct {
@@ -111,7 +114,13 @@ func (n *Node) GetStats() (*stats.Stats, error) {
 
 func (n *Node) GetPorts() (*worker.OccupiedPorts, error) {
 	url := fmt.Sprintf("http://%s/ports", n.Address)
-	resp, err := http.Get(url) // #nosec G107
+	ctx, cancel := context.WithTimeout(context.Background(), PortsQueryTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error building ports request for %v: %w", n.Address, err)
+	}
+	resp, err := http.DefaultClient.Do(req) // #nosec G107
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to %v: %w", n.Address, err)
 	}
