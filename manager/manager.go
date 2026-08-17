@@ -42,14 +42,16 @@ const (
 )
 
 type Manager struct {
-	Pending       queue.Queue
-	TaskDb        store.Store[task.Task]
-	EventDb       store.Store[task.TaskEvent]
-	WorkerTaskMap map[string][]uuid.UUID
-	TaskWorkerMap map[uuid.UUID]string
-	mu            sync.RWMutex
-	pendingMu     sync.Mutex
-	checkers      map[uuid.UUID]context.CancelFunc
+	Pending          queue.Queue
+	TaskDb           store.Store[task.Task]
+	EventDb          store.Store[task.TaskEvent]
+	WorkerTaskMap    map[string][]uuid.UUID
+	TaskWorkerMap    map[uuid.UUID]string
+	mu               sync.RWMutex
+	pendingMu        sync.Mutex
+	portMu           sync.Mutex
+	checkers         map[uuid.UUID]context.CancelFunc
+	portReservations map[string]map[string]uuid.UUID
 
 	WorkerNodes []*node.Node
 	Scheduler   scheduler.Scheduler
@@ -81,12 +83,13 @@ func New(workers []string, schedulerType, dbType string) (*Manager, error) {
 	}
 
 	m := Manager{
-		Pending:       *queue.New(),
-		WorkerTaskMap: workerTaskMap,
-		TaskWorkerMap: taskWorkerMap,
-		checkers:      make(map[uuid.UUID]context.CancelFunc),
-		WorkerNodes:   nodes,
-		Scheduler:     s,
+		Pending:          *queue.New(),
+		WorkerTaskMap:    workerTaskMap,
+		TaskWorkerMap:    taskWorkerMap,
+		checkers:         make(map[uuid.UUID]context.CancelFunc),
+		portReservations: make(map[string]map[string]uuid.UUID),
+		WorkerNodes:      nodes,
+		Scheduler:        s,
 	}
 
 	var ts store.Store[task.Task]
