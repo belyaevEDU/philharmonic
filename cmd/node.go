@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"text/tabwriter"
@@ -33,7 +32,7 @@ The node command allows a user to get the information about the nodes in the clu
 		}
 
 		url := fmt.Sprintf("http://%s/nodes", manager)
-		resp, err := http.Get(url)
+		resp, err := http.Get(url) // #nosec G107
 		if err != nil {
 			return err
 		}
@@ -57,24 +56,35 @@ The node command allows a user to get the information about the nodes in the clu
 		var errs []error
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 5, ' ', tabwriter.TabIndent)
-		fmt.Fprintln(w, "NAME\tMEMORY (MiB)\tDISK (GiB)\tROLE\tnodes\t")
+		if _, err := fmt.Fprintln(w, "NAME\tMEMORY (MiB)\tDISK (GiB)\tROLE\tnodes\t"); err != nil {
+			return err
+		}
 		for _, node := range nodes {
 			stats, err := node.GetStats()
 			if err != nil {
-				fmt.Fprintf(
+				if _, werr := fmt.Fprintf(
 					w, "%s\t%s\t%s\t%s\t%s\t\n",
 					node.Address,
 					nodeNotAvailable, nodeNotAvailable,
 					nodeNotAvailable, nodeNotAvailable,
-				)
+				); werr != nil {
+					errs = append(errs, werr)
+				}
 				errs = append(errs, err)
+				continue
 			}
-			fmt.Fprintf(
+			if _, werr := fmt.Fprintf(
 				w, "%s\t%.2f\t%.2f\t%s\t%d\t\n",
 				node.Address,
-				float64(stats.MemTotalKb())/memoryDivisor, float64(stats.DiskTotal())/math.Pow(memoryDivisor, 3),
+				float64(stats.MemTotalKb())/memoryDivisor,
+				float64(stats.DiskTotal())/(memoryDivisor*memoryDivisor*memoryDivisor),
 				node.Role, stats.TaskCount,
-			)
+			); werr != nil {
+				errs = append(errs, werr)
+			}
+		}
+		if err := w.Flush(); err != nil {
+			errs = append(errs, err)
 		}
 
 		if len(errs) > 0 {

@@ -32,7 +32,7 @@ The status command allows a user to get the status of tasks from the Philharmoni
 		}
 
 		url := fmt.Sprintf("http://%s/tasks", manager)
-		resp, err := http.Get(url)
+		resp, err := http.Get(url) // #nosec G107
 		if err != nil {
 			return err
 		}
@@ -54,7 +54,9 @@ The status command allows a user to get the status of tasks from the Philharmoni
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 5, ' ', tabwriter.TabIndent)
-		fmt.Fprintln(w, "ID\tNAME\tCREATED\tSTATE\tCONTAINERNAME\tIMAGE\t")
+		if _, err := fmt.Fprintln(w, "ID\tNAME\tCREATED\tSTATE\tCONTAINERNAME\tIMAGE\t"); err != nil {
+			return err
+		}
 		for _, task := range tasks {
 			var start string
 			if task.StartTime.IsZero() {
@@ -65,7 +67,9 @@ The status command allows a user to get the status of tasks from the Philharmoni
 
 			state := task.State.String()[task.State]
 			// holy hell
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t\n", task.ID, task.Name, start, state, task.Name, task.Image)
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t\n", task.ID, task.Name, start, state, task.Name, task.Image); err != nil {
+				return err
+			}
 		}
 		if err := w.Flush(); err != nil {
 			return err
