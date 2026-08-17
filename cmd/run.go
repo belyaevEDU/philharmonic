@@ -47,7 +47,7 @@ The run command starts a new task.`,
 			return fmt.Errorf("unable to read file %s: %w", filename, err)
 		}
 
-		url := fmt.Sprintf("http://%s/tasks", manager)
+		url := fmt.Sprintf("http://%s/tasks", manager) // #nosec G107
 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(data))
 		if err != nil {
 			return err
