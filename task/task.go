@@ -167,7 +167,7 @@ func ValidatePortMappings(mappings []PortMapping) error {
 			return fmt.Errorf("invalid protocol %s in port mapping (want tcp or udp)", pm.Protocol)
 		}
 
-		port, ok := network.PortFrom(uint16(pm.ContainerPort), proto)
+		port, ok := network.PortFrom(clampToUint16(pm.ContainerPort), proto)
 		if !ok {
 			return fmt.Errorf("invalid port mapping %d/%s", pm.ContainerPort, proto)
 		}
@@ -185,6 +185,14 @@ func ValidatePortMappings(mappings []PortMapping) error {
 		}
 	}
 	return nil
+}
+
+// gosec G115 fix: preventing overflow
+func clampToUint16(i int) uint16 {
+	if i > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	return uint16(i)
 }
 
 func (c *Config) dockerPorts() (network.PortSet, network.PortMap, error) {
