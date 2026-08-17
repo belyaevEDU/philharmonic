@@ -584,12 +584,34 @@ type OccupiedPorts struct {
 	UDP []int `json:"udp,omitempty"`
 }
 
-// sctp omitted. docker's create-time bind error patches that issue
-func (w *Worker) HostPorts() OccupiedPorts {
+func (w *Worker) HostPortsWithError() (OccupiedPorts, error) {
+	return w.hostPorts()
+}
+
+func (w *Worker) hostPorts() (OccupiedPorts, error) {
 	var occ OccupiedPorts
+	var errs []error
+	tcpSeen := make(map[int]struct{})
+	udpSeen := make(map[int]struct{})
+
+	addTCP := func(port int) {
+		if port != 0 {
+			if _, exists := tcpSeen[port]; !exists {
+				tcpSeen[port] = struct{}{}
+				occ.TCP = append(occ.TCP, port)
+			}
+		}
+	}
+	addUDP := func(port int) {
+		if port != 0 {
+			if _, exists := udpSeen[port]; !exists {
+				udpSeen[port] = struct{}{}
+				occ.UDP = append(occ.UDP, port)
+			}
+		}
+	}
 
 	tcpListen := func(s *netstat.SockTabEntry) bool {
-		// for tcp only LISTEN conns hold established host:port binds
 		return s.State == netstat.Listen && s.LocalAddr != nil
 	}
 	for _, fn := range []func(netstat.AcceptFn) ([]netstat.SockTabEntry, error){
@@ -597,12 +619,12 @@ func (w *Worker) HostPorts() OccupiedPorts {
 	} {
 		entries, err := fn(tcpListen)
 		if err != nil {
-			log.Printf("Error reading TCP listening sockets: %v\n", err)
+			errs = append(errs, fmt.Errorf("reading TCP listening sockets: %w", err))
 			continue
 		}
 		for _, e := range entries {
-			if e.LocalAddr != nil && e.LocalAddr.Port != 0 {
-				occ.TCP = append(occ.TCP, int(e.LocalAddr.Port))
+			if e.LocalAddr != nil {
+				addTCP(int(e.LocalAddr.Port))
 			}
 		}
 	}
@@ -610,19 +632,84 @@ func (w *Worker) HostPorts() OccupiedPorts {
 	for _, fn := range []func(netstat.AcceptFn) ([]netstat.SockTabEntry, error){
 		netstat.UDPSocks, netstat.UDP6Socks,
 	} {
-		entries, err := fn(netstat.NoopFilter) // udp doesnt care
+		entries, err := fn(netstat.NoopFilter)
 		if err != nil {
-			log.Printf("Error reading UDP sockets: %v\n", err)
+			errs = append(errs, fmt.Errorf("reading UDP sockets: %w", err))
 			continue
 		}
 		for _, e := range entries {
-			if e.LocalAddr != nil && e.LocalAddr.Port != 0 {
-				occ.UDP = append(occ.UDP, int(e.LocalAddr.Port))
+			if e.LocalAddr != nil {
+				addUDP(int(e.LocalAddr.Port))
+			}
+		}
+	}
+
+	// a scheduled task is a reservation even before docker creates its container
+	persistedTasks, err := w.listTasks()
+	if err != nil {
+		errs = append(errs, fmt.Errorf("listing worker tasks: %w", err))
+	}
+	for _, persisted := range persistedTasks {
+		if persisted.State != task.Scheduled && persisted.State != task.Running {
+			continue
+		}
+
+		var mappings []task.PortMapping
+		if persisted.State == task.Scheduled {
+			mappings = persisted.Ports
+		} else {
+			pinned := false
+			for _, pm := range persisted.Ports {
+				if pm.HostPort != 0 {
+					pinned = true
+					break
+				}
+			}
+			if !pinned {
+				continue
+			}
+
+			// do not trust the last persisted HostPorts for a running task.
+			// an exited container may leave that field behind and cause the manager
+			// to self-exclude a port now owned by some other process.
+			// inspecting also catches Docker NAT bindings that have no host LISTEN socket
+			inspect := w.InspectTask(*persisted)
+			if inspect.Error != nil || inspect.Response == nil || inspect.Response.State == nil {
+				if inspect.Error != nil {
+					errs = append(errs, fmt.Errorf("inspecting task %s: %w", persisted.ID, inspect.Error))
+				} else {
+					errs = append(errs, fmt.Errorf("inspecting task %s returned no container state", persisted.ID))
+				}
+				continue
+			}
+			if inspect.Response.State.Status != container.StateRunning &&
+				inspect.Response.State.Status != container.StateRestarting {
+				// updateTasks will reconcile this stale Running record
+				continue
+			}
+			if inspect.Response.NetworkSettings == nil {
+				errs = append(errs, fmt.Errorf("inspecting task %s returned no network settings", persisted.ID))
+				continue
+			}
+			mappings = task.PortMappingsFromPortMap(inspect.Response.NetworkSettings.Ports)
+		}
+
+		for _, pm := range mappings {
+			if pm.HostPort == 0 {
+				continue
+			}
+			switch pm.Protocol {
+			case "", "tcp":
+				addTCP(pm.HostPort)
+			case "udp":
+				addUDP(pm.HostPort)
+			default:
+				return OccupiedPorts{}, errors.New("non ''/'tcp'/'udp' mapping entry ended up in the portmappings slice")
 			}
 		}
 	}
 
 	sort.Ints(occ.TCP)
 	sort.Ints(occ.UDP)
-	return occ
+	return occ, errors.Join(errs...)
 }
