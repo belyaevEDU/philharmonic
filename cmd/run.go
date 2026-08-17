@@ -42,7 +42,7 @@ The run command starts a new task.`,
 		log.Printf("Using manager: %v\n", manager)
 		log.Printf("Using file: %v\n", fullFilePath)
 
-		data, err := os.ReadFile(filename)
+		data, err := openFileInCurrentDirectory(filename)
 		if err != nil {
 			return fmt.Errorf("unable to read file %s: %w", filename, err)
 		}
@@ -71,7 +71,26 @@ The run command starts a new task.`,
 func init() {
 	rootCmd.AddCommand(runCmd)
 	runCmd.Flags().StringP("manager", "m", "localhost:5555", "Manager to talk to")
-	runCmd.Flags().StringP("filename", "f", "task.json", "Task specification file")
+	runCmd.Flags().StringP("filename", "f", "task.json", "Task specification file (must be in current directory)")
+}
+
+func openFileInCurrentDirectory(filename string) ([]byte, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := root.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	return data, nil
 }
 
 func fileExists(filename string) bool {
