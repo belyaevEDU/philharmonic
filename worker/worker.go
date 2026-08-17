@@ -80,18 +80,17 @@ func (w *Worker) Close() error {
 	return err
 }
 
-func (w *Worker) getTasks() []*task.Task {
+func (w *Worker) listTasks() ([]*task.Task, error) {
 	w.dbMu.RLock()
 	defer w.dbMu.RUnlock()
 
 	if w.Db == nil {
-		return []*task.Task{}
+		return nil, errors.New("worker db is nil")
 	}
 
 	persisted, err := w.Db.List()
 	if err != nil {
-		log.Printf("Error listing worker tasks: %v\n", err)
-		return []*task.Task{}
+		return nil, err
 	}
 
 	tasks := make([]*task.Task, 0, len(persisted))
@@ -101,6 +100,15 @@ func (w *Worker) getTasks() []*task.Task {
 		}
 		copy := *t
 		tasks = append(tasks, &copy)
+	}
+	return tasks, nil
+}
+
+func (w *Worker) getTasks() []*task.Task {
+	tasks, err := w.listTasks()
+	if err != nil {
+		log.Printf("Error listing worker tasks: %v\n", err)
+		return []*task.Task{}
 	}
 	return tasks
 }
@@ -136,32 +144,34 @@ func (w *Worker) setTask(t task.Task) {
 	}
 }
 
-func (w *Worker) AddTask(t task.Task) {
-	// now publishing a scheduled start before putting the task in queue
-	// so that the manager can't get a Failed state from any prev. attempt
-
-	// also saving the last known container ID
-	// so StartTask can then remove that container before creating the replacement
+func (w *Worker) AddTask(t task.Task) error {
+	if t.State != task.Completed {
+		if err := task.ValidatePortMappings(t.Ports); err != nil {
+			return err
+		}
+	}
 
 	if t.State == task.Scheduled {
 		w.dbMu.Lock()
 		if w.Db == nil {
-			log.Printf("Cannot store scheduled worker task %s: db is nil\n", t.ID)
-		} else {
-			if persisted, err := w.Db.Get(t.ID); err == nil {
-				if t.ContainerID == "" {
-					t.ContainerID = persisted.ContainerID
-				}
-				if len(t.HostPorts) == 0 {
-					t.HostPorts = persisted.HostPorts
-				}
-			} else if !errors.Is(err, store.ErrNotFound) {
-				log.Printf("Error getting worker task %s: %v\n", t.ID, err)
+			w.dbMu.Unlock()
+			return errors.New("worker db is nil")
+		}
+		if persisted, err := w.Db.Get(t.ID); err == nil {
+			if t.ContainerID == "" {
+				t.ContainerID = persisted.ContainerID
 			}
-			queued := t
-			if err := w.Db.Put(queued.ID, &queued); err != nil {
-				log.Printf("Error storing worker task %s: %v\n", queued.ID, err)
+			if len(t.HostPorts) == 0 {
+				t.HostPorts = persisted.HostPorts
 			}
+		} else if !errors.Is(err, store.ErrNotFound) {
+			w.dbMu.Unlock()
+			return fmt.Errorf("getting worker task %s: %w", t.ID, err)
+		}
+		queued := t
+		if err := w.Db.Put(queued.ID, &queued); err != nil {
+			w.dbMu.Unlock()
+			return fmt.Errorf("storing worker task %s: %w", queued.ID, err)
 		}
 		w.dbMu.Unlock()
 	}
@@ -169,6 +179,7 @@ func (w *Worker) AddTask(t task.Task) {
 	w.queueMu.Lock()
 	w.Queue.Enqueue(t)
 	w.queueMu.Unlock()
+	return nil
 }
 
 func (w *Worker) queueLen() int {
