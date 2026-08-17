@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	StatsQueryMaxRetries  = 5
-	StatsQuerySleepPeriod = 5
+	StatsQueryMaxRetries  = 3
+	StatsQuerySleepPeriod = 3
 	PortsQueryTimeout     = 5 * time.Second
 )
 
