@@ -24,6 +24,7 @@ var nodesCmd = &cobra.Command{
 	Long: `philharmonic node command
 
 The node command allows a user to get the information about the nodes in the cluster.`,
+
 	RunE: func(cmd *cobra.Command, args []string) error {
 		manager, err := cmd.Flags().GetString("manager")
 		if err != nil {
@@ -55,7 +56,7 @@ The node command allows a user to get the information about the nodes in the clu
 		var errs []error
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 5, ' ', tabwriter.TabIndent)
-		if _, err := fmt.Fprintln(w, "NAME\tMEMORY (MiB)\tDISK (GiB)\tROLE\tnodes\t"); err != nil {
+		if _, err := fmt.Fprintln(w, "NAME\tMEMORY (MiB)\tDISK (GiB)\tROLE\tTASKS\t"); err != nil {
 			return err
 		}
 		for _, node := range nodes {
