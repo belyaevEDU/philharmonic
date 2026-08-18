@@ -61,7 +61,9 @@ worker:
   # Port the worker listens on
   port: 5556
 
-  # Name of the worker. Leave empty to auto-generate "worker-<uuid>"
+  # name of the worker. Leave empty to default to the host's hostname.
+  # with --dbtype bolt the task DB file is derived from the name
+  # ("<name>_tasks.db")
   name: ""
 
   # Task storage backend: "memory" or "bolt"
