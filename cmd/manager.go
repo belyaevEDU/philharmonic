@@ -75,7 +75,14 @@ The manager controls the orchestration system. Is responsible for:
 		select {
 		case err := <-errCh:
 			stop()
-			return err
+			runErr := err
+			if serr := api.Shutdown(); serr != nil && runErr == nil {
+				runErr = serr
+			}
+			if cerr := m.Close(); cerr != nil && runErr == nil {
+				runErr = cerr
+			}
+			return runErr
 		case <-ctx.Done():
 		}
 		stop()
