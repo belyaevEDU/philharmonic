@@ -317,34 +317,33 @@ func (m *Manager) getTaskByName(name string) (task.Task, bool, bool) {
 }
 
 // deleteTask removes a task record from the store and cleans up its pending,
-// ownership, and port-reservation entries. Pending tasks have no container to
-// stop yet, so deleting their queued events is the cancellation operation
+// ownership, and port-reservation entries
 func (m *Manager) deleteTask(t task.Task) error {
-	m.removePendingTask(t.ID)
-
-	owner := m.taskWorker(t.ID)
-	if t.State == task.Failed && t.ContainerID != "" && owner != "" {
-		m.bestEffortStopOldContainer(owner, t)
-	}
-
 	m.mu.Lock()
 	if m.TaskDb == nil {
 		m.mu.Unlock()
 		return errors.New("task db is nil")
 	}
-	err := m.TaskDb.Delete(t.ID)
-	owner = m.TaskWorkerMap[t.ID]
+	if err := m.TaskDb.Delete(t.ID); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	owner := m.TaskWorkerMap[t.ID]
 	delete(m.TaskWorkerMap, t.ID)
 	if owner != "" {
 		m.removeTaskID(owner, t.ID)
 	}
 	m.mu.Unlock()
 
-	// releasePorts is a no-op if the reservation was already freed
+	// durable deletion succeeded; clean up the rest
+	m.removePendingTask(t.ID)
 	if owner != "" {
 		m.releasePorts(owner, &t)
 	}
-	return err
+	if t.State == task.Failed && t.ContainerID != "" && owner != "" {
+		m.bestEffortStopOldContainer(owner, t)
+	}
+	return nil
 }
 
 func (m *Manager) pendingLen() int {
