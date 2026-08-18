@@ -279,6 +279,12 @@ func (w *Worker) runTask() task.DockerResult {
 }
 
 func (w *Worker) StartTask(t task.Task) task.DockerResult {
+	if t.RestartCount > 0 || t.ContainerID != "" {
+		log.Printf("Restarting task %s (attempt %d)\n", t.ID, t.RestartCount)
+	} else {
+		log.Printf("Starting task %s\n", t.ID)
+	}
+
 	if err := task.ValidatePortMappings(t.Ports); err != nil {
 		t.State = task.Failed
 		t.HostPorts = nil
@@ -578,9 +584,7 @@ func (w *Worker) UpdateTasks(ctx context.Context) {
 	ticker := time.NewTicker(LoopInterval)
 	defer ticker.Stop()
 	for {
-		log.Println("Checking status of tasks...")
 		w.updateTasks()
-		log.Println("Task updates completed")
 		select {
 		case <-ctx.Done():
 			return
