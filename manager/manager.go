@@ -526,6 +526,7 @@ func (m *Manager) SendWork() {
 			if pending, exists := m.getTask(t.ID); exists && pending.State == task.Pending {
 				if err := m.deleteTask(pending); err != nil {
 					log.Printf("Error deleting pending task %s: %v\n", t.ID, err)
+					m.enqueuePending(te)
 				} else {
 					log.Printf("Cancelled pending task %s\n", t.ID)
 				}
