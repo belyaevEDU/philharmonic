@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 
 	"github.com/spf13/cobra"
@@ -39,7 +38,7 @@ You may give either the task's UUID or the task's name.`,
 			return fmt.Errorf("error sending request: %w", err)
 		}
 
-		log.Printf("Task %v has been stopped.\n", args[0])
+		fmt.Printf("Sent request to stop task %v.\n", args[0])
 		return nil
 	},
 }
