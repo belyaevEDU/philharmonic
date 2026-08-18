@@ -248,7 +248,21 @@ func (m *Manager) AddTask(te task.TaskEvent) error {
 			return fmt.Errorf("checking task %s: %w", te.Task.ID, err)
 		}
 
+		// holding the name for the whole lifecycle up to Completed
+		// Failed still holds: a Failed task may be restarted back to Scheduled
+		// and reuses the name
 		queued := te.Task
+		if queued.Name != "" {
+			// restricting the user from setting the task's name to be a UUID
+			if isUUIDLike(queued.Name) {
+				m.mu.Unlock()
+				return fmt.Errorf("task name must not be a UUID: %q", queued.Name)
+			}
+			if clash := m.taskNameInUseLocked(queued.Name); clash {
+				m.mu.Unlock()
+				return fmt.Errorf("task name %q already in use", queued.Name)
+			}
+		}
 		queued.State = task.Pending // updated, not yet sent to a worker
 		if err := m.TaskDb.Put(queued.ID, &queued); err != nil {
 			m.mu.Unlock()
@@ -261,6 +275,42 @@ func (m *Manager) AddTask(te task.TaskEvent) error {
 	m.Pending.Enqueue(te)
 	m.pendingMu.Unlock()
 	return nil
+}
+
+func isUUIDLike(name string) bool {
+	_, err := uuid.Parse(name)
+	return err == nil
+}
+
+// reports whether any non-Completed task already holds the given Name.
+// caller must hold m.mu
+func (m *Manager) taskNameInUseLocked(name string) bool {
+	persisted, err := m.TaskDb.List()
+	if err != nil {
+		log.Printf("Error listing tasks for name-uniqueness check: %v\n", err)
+		return false // don't block the submit on a transient store error
+	}
+	for _, t := range persisted {
+		if t == nil || t.Name != name {
+			continue
+		}
+		if t.State != task.Completed {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) getTaskByName(name string) (task.Task, bool, bool) {
+	var match task.Task
+	count := 0
+	for _, t := range m.getTasks() {
+		if t.Name == name {
+			match = t
+			count++
+		}
+	}
+	return match, count == 1, count > 1
 }
 
 func (m *Manager) pendingLen() int {
