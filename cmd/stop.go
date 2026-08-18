@@ -15,6 +15,8 @@ var stopCmd = &cobra.Command{
 The stop command stops a running task.
 You may give either the task's UUID or the task's name.`,
 
+	SilenceUsage: true,
+
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		manager, err := cmd.Flags().GetString("manager")

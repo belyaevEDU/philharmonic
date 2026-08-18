@@ -22,6 +22,8 @@ var runCmd = &cobra.Command{
 
 The run command starts a new task.`,
 
+	SilenceUsage: true,
+
 	RunE: func(cmd *cobra.Command, args []string) error {
 		manager, err := cmd.Flags().GetString("manager")
 		if err != nil {
