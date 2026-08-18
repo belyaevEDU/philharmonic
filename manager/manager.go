@@ -535,6 +535,14 @@ func (m *Manager) SendWork() {
 			log.Printf("Cannot stop task %s: no worker owns it\n", t.ID)
 			return
 		} else {
+			// a cancellation may have removed the task while it was sitting in the
+			// queue; skip dispatch rather than creating a container we'd have to
+			// stop immediately. (the post-201 check below is the correctness backstop
+			// if the deletion races with this check). nightmare
+			if _, exists := m.getTask(t.ID); !exists {
+				log.Printf("Task %s was cancelled while queued, skipping dispatch\n", t.ID)
+				return
+			}
 			var err error
 			w, err = m.selectAndReserveWorker(&t, "")
 			if err != nil {
@@ -615,6 +623,12 @@ func (m *Manager) SendWork() {
 			return
 		}
 
+		respTask := task.Task{}
+		decodeErr := d.Decode(&respTask)
+		if decodeErr != nil {
+			fmt.Printf("Error decoding response: %v\n", decodeErr)
+		}
+
 		m.mu.Lock()
 		if m.EventDb == nil {
 			log.Printf("Cannot store event %s: event db is nil\n", te.ID)
@@ -622,6 +636,18 @@ func (m *Manager) SendWork() {
 			log.Printf("Error storing event %s: %v\n", te.ID, err)
 		}
 		if !isStop {
+			// a cancellation may have deleted the task while the POST was in flight.
+			// if so, don't resurrect it. release the ports we reserved and issue a
+			// compensating stop for the container the worker just created
+			if _, getErr := m.TaskDb.Get(t.ID); getErr != nil {
+				m.mu.Unlock()
+				if reserved {
+					m.releasePorts(w.Address, &t)
+				}
+				log.Printf("Task %s was cancelled while starting on worker %s; stopping orphaned container\n", t.ID, w.Address)
+				m.bestEffortStopOldContainer(w.Address, respTask)
+				return
+			}
 			if m.TaskWorkerMap[t.ID] != w.Address {
 				m.WorkerTaskMap[w.Address] = append(m.WorkerTaskMap[w.Address], t.ID)
 			}
@@ -638,14 +664,11 @@ func (m *Manager) SendWork() {
 			m.releasePorts(w.Address, &t)
 		}
 
-		// the worker api returns the json of the newly created task
-		// in response to POST /tasks
-		t = task.Task{}
-		err = d.Decode(&t)
-		if err != nil {
-			fmt.Printf("Error decoding response: %v\n", err)
-			return
+		if decodeErr == nil {
+			log.Printf("%#v\n", respTask) // # adds field names
 		}
+	} else {
+		log.Println("No work in the queue")
 	}
 }
 
