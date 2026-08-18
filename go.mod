@@ -18,6 +18,7 @@ require (
 	github.com/moby/moby/client v0.5.1
 	github.com/spf13/cobra v1.10.2
 	go.etcd.io/bbolt v1.5.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
