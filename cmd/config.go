@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -118,7 +117,7 @@ func loadConfig(path string) error {
 	defer func() {
 		err := root.Close()
 		if err != nil {
-			log.Fatalln(err)
+			fmt.Printf("Error raised closing response body: %v\n", err)
 		}
 	}()
 

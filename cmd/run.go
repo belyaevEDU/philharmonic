@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -42,8 +41,8 @@ The run command starts a new task.`,
 			return fmt.Errorf("file %s does not exist", filename)
 		}
 
-		log.Printf("Using manager: %v\n", manager)
-		log.Printf("Using file: %v\n", fullFilePath)
+		fmt.Printf("Using manager: %v\n", manager)
+		fmt.Printf("Using file: %v\n", fullFilePath)
 
 		data, err := openFileInCurrentDirectory(filename)
 		if err != nil {
@@ -58,7 +57,7 @@ The run command starts a new task.`,
 		defer func() {
 			err := resp.Body.Close()
 			if err != nil {
-				log.Fatalf("Error raised closing response body: %v\n", err)
+				fmt.Printf("Error raised closing response body: %v\n", err)
 			}
 		}()
 
@@ -76,8 +75,8 @@ The run command starts a new task.`,
 			return fmt.Errorf("decoding manager response: %w", err)
 		}
 
-		log.Printf("Successfully created task %q (id %s)", created.Name, created.ID)
-		log.Printf("Stop it later with: philharmonic stop %s", created.Name)
+		fmt.Printf("Successfully created task %q (id %s)\n", created.Name, created.ID)
+		fmt.Printf("Stop it later with: philharmonic stop %s\n", created.Name)
 		return nil
 	},
 }

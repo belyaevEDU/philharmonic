@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"text/tabwriter"
@@ -39,7 +38,7 @@ The status command allows a user to get the status of tasks from the Philharmoni
 		defer func() {
 			err := resp.Body.Close()
 			if err != nil {
-				log.Fatalf("Error raised closing response body: %v\n", err)
+				fmt.Printf("Error raised closing response body: %v\n", err)
 			}
 		}()
 

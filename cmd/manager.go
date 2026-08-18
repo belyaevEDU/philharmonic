@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"context"
-	"log"
+	"fmt"
 
 	"github.com/belyaevedu/philharmonic/manager"
 	"github.com/spf13/cobra"
@@ -41,7 +41,7 @@ The manager controls the orchestration system. Is responsible for:
 			return err
 		}
 
-		log.Println("Starting manager...")
+		fmt.Println("Starting manager...")
 
 		m, err := manager.New(workers, scheduler, dbType)
 		if err != nil {

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"text/tabwriter"
@@ -39,7 +38,7 @@ The node command allows a user to get the information about the nodes in the clu
 		defer func() {
 			err := resp.Body.Close()
 			if err != nil {
-				log.Fatalf("Error raised closing response body: %v\n", err)
+				fmt.Printf("Error raised closing response body: %v\n", err)
 			}
 		}()
 
