@@ -26,7 +26,7 @@ You may give either the task's UUID or the task's name.`,
 
 		url := fmt.Sprintf("http://%s/tasks/%s", manager, args[0])
 		client := &http.Client{}
-		req, err := http.NewRequest("DELETE", url, nil)
+		req, err := http.NewRequest(http.MethodDelete, url, nil)
 		if err != nil {
 			return fmt.Errorf("error creating request %s: %w", url, err)
 		}
