@@ -318,7 +318,7 @@ func (m *Manager) getTaskByName(name string) (task.Task, bool, bool) {
 
 // deleteTask removes a task record from the store and cleans up its pending,
 // ownership, and port-reservation entries. Pending tasks have no container to
-// stop yet, so deleting their queued events is the cancellation operation.
+// stop yet, so deleting their queued events is the cancellation operation
 func (m *Manager) deleteTask(t task.Task) error {
 	m.removePendingTask(t.ID)
 
@@ -371,9 +371,7 @@ func (m *Manager) enqueuePending(te task.TaskEvent) {
 	m.pendingMu.Unlock()
 }
 
-// removePendingTask drops every queued event for id. A stop request for a
-// Pending task must cancel its original start event as well; otherwise that
-// event could still be delivered after the task has been deleted.
+// removePendingTask drops every queued event for id
 func (m *Manager) removePendingTask(id uuid.UUID) {
 	m.pendingMu.Lock()
 	defer m.pendingMu.Unlock()
@@ -523,9 +521,9 @@ func (m *Manager) SendWork() {
 				}
 			}
 		} else if isStop {
-			// A stop can overtake a failed/requeued start while the task is
-			// still Pending. There is no worker to contact in that case; cancel
-			// the queued start and remove the task instead of dropping the stop.
+			// a stop can overtake a failed/requeued start while the task is still Pending.
+			// there is no worker to contact in that case; cancel the queued start
+			// and remove the task instead of dropping the stop
 			if pending, exists := m.getTask(t.ID); exists && pending.State == task.Pending {
 				if err := m.deleteTask(pending); err != nil {
 					log.Printf("Error deleting pending task %s: %v\n", t.ID, err)
