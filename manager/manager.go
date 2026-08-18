@@ -29,13 +29,16 @@ const (
 	WorkerTasksURL = "http://%s/tasks"
 	WorkerRole     = "worker"
 
+	DbFilemode = os.FileMode(0600)
+)
+
+var (
 	MaxRestarts = 3
 
 	LoopInterval = 10 * time.Second
 
 	DbTasksFile   = "tasks.db"
 	DbEventsFile  = "events.db"
-	DbFilemode    = os.FileMode(0600)
 	DbTaskBucket  = "tasks"
 	DbEventBucket = "events"
 )
@@ -631,7 +634,7 @@ func (m *Manager) UpdateTasks(ctx context.Context) {
 	for {
 		log.Println("[Manager] Checking for task updates from workers")
 		m.updateTasks()
-		log.Println("Task updates completed. Sleeping for 10 seconds")
+		log.Printf("Task updates completed. Sleeping for %s", LoopInterval)
 		select {
 		case <-ctx.Done():
 			return
@@ -647,7 +650,7 @@ func (m *Manager) DoHealthChecks(ctx context.Context) {
 		log.Println("[Manager] Reconciling task health checkers")
 		m.reconcileCheckers(ctx)
 		m.restartFailedTasks()
-		log.Println("Sleeping for 10 seconds")
+		log.Printf("Sleeping for %s", LoopInterval)
 		select {
 		case <-ctx.Done():
 			return
@@ -1117,7 +1120,7 @@ func (m *Manager) ProcessTasks(ctx context.Context) {
 	for {
 		log.Println("[Manager] Processing any tasks in the queue")
 		m.SendWork()
-		log.Println("Sleeping for 10 seconds")
+		log.Printf("Sleeping for %s", LoopInterval)
 		select {
 		case <-ctx.Done():
 			return

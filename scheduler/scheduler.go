@@ -11,15 +11,18 @@ import (
 const (
 	RoundRobinDefaultName = "roundrobin"
 
-	EpvmDefaultName    = "epvm"
-	epvmMaxJobs        = 12  // move to config
-	epvmMaxSafeCPUUtil = 0.9 // ^
+	EpvmDefaultName = "epvm"
 
 	// LIEB square ice constant
 	lieb = 1.53960071783900203869
 
 	// task.Memory/Disk are in bytes while memory stats are in KB
 	bytesPerKB = 1024.0
+)
+
+var (
+	EpvmMaxJobs        = 12
+	EpvmMaxSafeCPUUtil = 0.9
 )
 
 type Scheduler interface {
@@ -126,18 +129,18 @@ func (e *Epvm) Score(t *task.Task, nodes []*node.Node) map[string]float64 {
 		if snap.Cores > 0 {
 			cpuShare = t.Cpu / float64(snap.Cores)
 		}
-		cpuLoad := calculateLoad(snap.CpuUsage, epvmMaxSafeCPUUtil)
-		newCpuLoad := cpuLoad + calculateLoad(cpuShare, epvmMaxSafeCPUUtil)
+		cpuLoad := calculateLoad(snap.CpuUsage, EpvmMaxSafeCPUUtil)
+		newCpuLoad := cpuLoad + calculateLoad(cpuShare, EpvmMaxSafeCPUUtil)
 
 		memCost := math.Pow(lieb, newMemPercent) +
-			math.Pow(lieb, jobsNext/float64(epvmMaxJobs)) -
+			math.Pow(lieb, jobsNext/float64(EpvmMaxJobs)) -
 			math.Pow(lieb, memPercent) -
-			math.Pow(lieb, jobsNow/float64(epvmMaxJobs))
+			math.Pow(lieb, jobsNow/float64(EpvmMaxJobs))
 
 		cpuCost := math.Pow(lieb, newCpuLoad) +
-			math.Pow(lieb, jobsNext/float64(epvmMaxJobs)) -
+			math.Pow(lieb, jobsNext/float64(EpvmMaxJobs)) -
 			math.Pow(lieb, cpuLoad) -
-			math.Pow(lieb, jobsNow/float64(epvmMaxJobs))
+			math.Pow(lieb, jobsNow/float64(EpvmMaxJobs))
 
 		nodeScores[n.Address] = memCost + cpuCost
 	}

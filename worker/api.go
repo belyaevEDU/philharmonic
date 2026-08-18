@@ -14,8 +14,9 @@ import (
 
 const (
 	apiReadHeaderTimeout = 5 * time.Second
-	apiShutdownTimeout   = 10 * time.Second
 )
+
+var ApiShutdownTimeout = 10 * time.Second
 
 type Api struct {
 	Address string
@@ -65,7 +66,7 @@ func (a *Api) Shutdown() error {
 	if a.server == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), apiShutdownTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), ApiShutdownTimeout)
 	defer cancel()
 	return a.server.Shutdown(ctx)
 }

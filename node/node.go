@@ -19,9 +19,9 @@ import (
 	"github.com/belyaevedu/philharmonic/worker"
 )
 
-const (
+var (
 	StatsQueryMaxRetries  = 3
-	StatsQuerySleepPeriod = 3
+	StatsQuerySleepPeriod = 3 * time.Second
 	PortsQueryTimeout     = 5 * time.Second
 )
 

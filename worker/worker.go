@@ -22,8 +22,11 @@ import (
 )
 
 const (
-	DbFilename   = "%s_tasks.db"
-	DbFilemode   = os.FileMode(0600)
+	DbFilemode = os.FileMode(0600)
+)
+
+var (
+	DbFilename   = "%s_tasks.db" // %s is substituted with the worker's name
 	DbBucketName = "tasks"
 
 	LoopInterval = 10 * time.Second
