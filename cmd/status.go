@@ -47,6 +47,10 @@ The status command allows a user to get the status of tasks from the Philharmoni
 			}
 		}()
 
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("manager returned status %d", resp.StatusCode)
+		}
+
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return err
