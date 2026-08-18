@@ -11,6 +11,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const defaultWorkerAddress = "localhost:5556"
+
+func isDefaultWorkerList(workers []string) bool {
+	return len(workers) == 1 && workers[0] == defaultWorkerAddress
+}
+
 var managerCmd = &cobra.Command{
 	Use:   "manager",
 	Short: "Manager command to launch a Philharmonic manager node",
@@ -45,6 +51,9 @@ The manager controls the orchestration system. Is responsible for:
 		}
 
 		fmt.Println("Starting manager...")
+		if isDefaultWorkerList(workers) {
+			fmt.Printf("Notice: using the default worker list: %v\n", workers)
+		}
 
 		m, err := manager.New(workers, scheduler, dbType)
 		if err != nil {
@@ -83,7 +92,7 @@ func init() {
 	managerCmd.Flags().StringP("host", "H", "0.0.0.0", "Hostname or IP address")
 	managerCmd.Flags().IntP("port", "p", 5555, "Port on which to listen")
 	managerCmd.Flags().StringSliceP(
-		"workers", "w", []string{"localhost:5556"},
+		"workers", "w", []string{defaultWorkerAddress},
 		"List of addresses and ports of workers on which the manager will scheduler tasks",
 	)
 	managerCmd.Flags().StringP("scheduler", "s", "epvm", "Name of scheduler to use")
