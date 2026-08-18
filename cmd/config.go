@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/belyaevedu/philharmonic/httpclient"
 	"github.com/belyaevedu/philharmonic/manager"
 	"github.com/belyaevedu/philharmonic/node"
 	"github.com/belyaevedu/philharmonic/scheduler"
@@ -35,6 +36,11 @@ type Config struct {
 	Scheduler *SchedulerConfig `yaml:"scheduler"`
 	Task      *TaskConfig      `yaml:"task"`
 	Client    *ClientConfig    `yaml:"client"`
+	HTTP      *HTTPConfig      `yaml:"http"`
+}
+
+type HTTPConfig struct {
+	ClientTimeout *string `yaml:"client_timeout"` // duration
 }
 
 type ManagerConfig struct {
@@ -210,6 +216,10 @@ func setSlice(cmd *cobra.Command, name string, v []string) error {
 // runtime tunable overrides (package vars <- config), with validation.
 // must be called after loadConfig, from PersistentPreRunE
 func applyRuntimeConfig(cmd *cobra.Command) error {
+	if err := applyHTTPRuntime(cfg.HTTP); err != nil {
+		return err
+	}
+
 	switch cmd.Name() {
 	case "manager":
 		if err := applyManagerRuntime(cfg.Manager); err != nil {
@@ -231,9 +241,23 @@ func applyRuntimeConfig(cmd *cobra.Command) error {
 		return applyTaskRuntime(cfg.Task)
 	case "nodes":
 		return applyNodeRuntime(cfg.Node)
+	case "run", "status", "stop":
+		return nil
 	default:
 		return nil
 	}
+}
+
+func applyHTTPRuntime(h *HTTPConfig) error {
+	if h == nil || h.ClientTimeout == nil {
+		return nil
+	}
+	d, err := parsePosDuration("http.client_timeout", *h.ClientTimeout)
+	if err != nil {
+		return err
+	}
+	httpclient.ClientTimeout = d
+	return nil
 }
 
 func applyManagerRuntime(m *ManagerConfig) error {

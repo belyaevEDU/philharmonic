@@ -84,6 +84,11 @@ worker:
   # grace period for in-flight HTTP requests on worker API shutdown (> 0)
   api_shutdown_timeout: "10s"
 
+# HTTP clients used by the manager, node polling, and CLI commands
+http:
+  # timeout for an HTTP client request (> 0)
+  client_timeout: "10s"
+
 # Node polling ("philharmonic manager" side, the node package runtime vars)
 node:
   # maximum attempts when querying a worker's /stats (> 0)

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/belyaevedu/philharmonic/httpclient"
 	"github.com/belyaevedu/philharmonic/stats"
 	"github.com/belyaevedu/philharmonic/utils"
 	"github.com/belyaevedu/philharmonic/worker"
@@ -75,7 +76,7 @@ func validateAddress(address string) error {
 
 func (n *Node) GetStats() (*stats.Stats, error) {
 	url := fmt.Sprintf("http://%s/stats", n.Address)
-	resp, err := utils.HTTPWithRetry(http.Get, url, StatsQueryMaxRetries, StatsQuerySleepPeriod) // #nosec G107
+	resp, err := utils.HTTPWithRetry(httpclient.New().Get, url, StatsQueryMaxRetries, StatsQuerySleepPeriod) // #nosec G107
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to %v: %w", n.Address, err)
 	}
@@ -119,7 +120,7 @@ func (n *Node) GetPorts() (*worker.OccupiedPorts, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error building ports request for %v: %w", n.Address, err)
 	}
-	resp, err := http.DefaultClient.Do(req) // #nosec G107
+	resp, err := httpclient.New().Do(req) // #nosec G107
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to %v: %w", n.Address, err)
 	}
