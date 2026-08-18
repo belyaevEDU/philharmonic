@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"text/tabwriter"
 
+	"github.com/belyaevedu/philharmonic/httpclient"
 	"github.com/belyaevedu/philharmonic/node"
 	"github.com/belyaevedu/philharmonic/stats"
 	"github.com/spf13/cobra"
@@ -34,7 +35,7 @@ The nodes command allows a user to get information about the nodes in the cluste
 		}
 
 		url := fmt.Sprintf("http://%s/nodes", manager)
-		resp, err := newHTTPClient().Get(url) // #nosec G107
+		resp, err := httpclient.New().Get(url) // #nosec G107
 		if err != nil {
 			return fmt.Errorf("error connecting to manager: %w", err)
 		}

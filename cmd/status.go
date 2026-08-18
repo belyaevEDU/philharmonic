@@ -9,6 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/belyaevedu/philharmonic/httpclient"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/docker/go-units"
 	"github.com/spf13/cobra"
@@ -55,7 +56,7 @@ In that mode, the final two columns show the current restart count and latest fa
 		}
 
 		url := fmt.Sprintf("http://%s/tasks", manager)
-		resp, err := newHTTPClient().Get(url) // #nosec G107
+		resp, err := httpclient.New().Get(url) // #nosec G107
 		if err != nil {
 			return err
 		}

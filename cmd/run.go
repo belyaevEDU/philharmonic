@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/belyaevedu/philharmonic/handlers"
+	"github.com/belyaevedu/philharmonic/httpclient"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/spf13/cobra"
 )
@@ -48,7 +49,7 @@ The run command starts a new task.`,
 		fmt.Printf("Using file: %v\n", fullFilePath)
 
 		url := fmt.Sprintf("http://%s/tasks", manager)
-		resp, err := newHTTPClient().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
+		resp, err := httpclient.New().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 		if err != nil {
 			return err
 		}

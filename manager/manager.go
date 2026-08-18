@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/belyaevedu/philharmonic/handlers"
+	"github.com/belyaevedu/philharmonic/httpclient"
 	"github.com/belyaevedu/philharmonic/node"
 	"github.com/belyaevedu/philharmonic/scheduler"
 	"github.com/belyaevedu/philharmonic/store"
@@ -37,11 +38,10 @@ var (
 
 	LoopInterval = 10 * time.Second
 
-	DbTasksFile       = "tasks.db"
-	DbEventsFile      = "events.db"
-	DbTaskBucket      = "tasks"
-	DbEventBucket     = "events"
-	HTTPClientTimeout = 10 * time.Second
+	DbTasksFile   = "tasks.db"
+	DbEventsFile  = "events.db"
+	DbTaskBucket  = "tasks"
+	DbEventBucket = "events"
 )
 
 type Manager struct {
@@ -58,10 +58,6 @@ type Manager struct {
 
 	WorkerNodes []*node.Node
 	Scheduler   scheduler.Scheduler
-}
-
-func newHTTPClient() *http.Client {
-	return &http.Client{Timeout: HTTPClientTimeout}
 }
 
 func New(workers []string, schedulerType, dbType string) (*Manager, error) {
@@ -537,7 +533,7 @@ func (m *Manager) SendWork() {
 
 		url := fmt.Sprintf(WorkerTasksURL, w.Address)
 		// ignoring gosec's G107 since the url is not from external input, but from an internal config
-		resp, err := newHTTPClient().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
+		resp, err := httpclient.New().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 		if err != nil {
 			if reserved {
 				m.releasePorts(w.Address, &t)
@@ -620,7 +616,7 @@ func (m *Manager) SendWork() {
 func (m *Manager) fetchTasksFromWorker(worker string) ([]*task.Task, error) {
 	url := fmt.Sprintf(WorkerTasksURL, worker)
 	// ignoring gosec's G107 since the url is not from external input, but from an internal config
-	resp, err := newHTTPClient().Get(url) // #nosec G107
+	resp, err := httpclient.New().Get(url) // #nosec G107
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to worker: %w", err)
 	}
@@ -797,7 +793,7 @@ func (m *Manager) restartTask(t task.Task) error {
 
 	url := fmt.Sprintf(WorkerTasksURL, w.Address)
 	// ignoring gosec's G107 since the url is not from external input, but from an internal config
-	resp, err := newHTTPClient().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
+	resp, err := httpclient.New().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
 		m.releasePorts(w.Address, &next)
 		// the worker never saw the restart, so don't burn a restart slot
@@ -926,7 +922,7 @@ func (m *Manager) bestEffortStopOldContainer(addr string, t task.Task) {
 		return
 	}
 	url := fmt.Sprintf(WorkerTasksURL, addr)
-	resp, err := newHTTPClient().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
+	resp, err := httpclient.New().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
 		log.Printf("Could not reach old owner %s to stop orphaned container %s: %v", addr, t.ContainerID, err)
 		return
@@ -976,7 +972,7 @@ func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
 	}
 
 	url := fmt.Sprintf(WorkerTasksURL, w)
-	resp, err := newHTTPClient().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
+	resp, err := httpclient.New().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
 		log.Printf("Error connecting to %v: %v", w, err)
 		return
@@ -1017,7 +1013,7 @@ func (m *Manager) checkTaskHealth(ctx context.Context, t task.Task, w string) er
 		if err != nil {
 			return fmt.Errorf("error building request: %w", err)
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := httpclient.New().Do(req)
 		if err != nil {
 			return fmt.Errorf("error performing health check %s: %w", url, err)
 		}

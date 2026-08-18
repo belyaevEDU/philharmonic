@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/belyaevedu/philharmonic/httpclient"
 	"github.com/spf13/cobra"
 )
 
@@ -32,7 +33,7 @@ You may give either the task's UUID or the task's name.`,
 		// PathEscape keeps a name from breaking or misrouting the request.
 		encoded := url.PathEscape(args[0])
 		requestURL := fmt.Sprintf("http://%s/tasks/%s", manager, encoded)
-		client := newHTTPClient()
+		client := httpclient.New()
 		req, err := http.NewRequest(http.MethodDelete, requestURL, nil)
 		if err != nil {
 			return fmt.Errorf("error creating request %s: %w", requestURL, err)
