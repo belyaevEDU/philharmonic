@@ -106,9 +106,10 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// calling stop on a task with state Completed or Failed
-	// cleans the task up from the dbs
-	if taskToStop.State == task.Completed || taskToStop.State == task.Failed {
+	// stopping a Completed/Failed task cleans it up from the db
+	// a Failed task is cleaned up only after it has reached the restart cap
+	if taskToStop.State == task.Completed ||
+		(taskToStop.State == task.Failed && taskToStop.RestartCount >= MaxRestarts) {
 		if err := a.Manager.deleteTask(taskToStop); err != nil {
 			msg := fmt.Sprintf("Error deleting terminal task %s: %v\n", taskToStop.ID, err)
 			responseErr := handlers.HttpResponseHelper(w, msg, http.StatusInternalServerError)

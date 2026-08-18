@@ -250,8 +250,8 @@ func (m *Manager) AddTask(te task.TaskEvent) error {
 		}
 
 		// a task holds its Name for its whole lifecycle, including Completed.
-		// Failed holds because a Failed task may be restarted back to Scheduled
-		// and reuse the name.
+		// Failed holds while it can still be restarted back to Scheduled and
+		// reuse the name; once it reaches MaxRestarts, a stop can delete it.
 		// Completed holds until the record is removed from the store:
 		// a stop on an already-Completed task deletes it, freeing the name
 		queued := te.Task
@@ -314,8 +314,8 @@ func (m *Manager) getTaskByName(name string) (task.Task, bool, bool) {
 	return match, count == 1, count > 1
 }
 
-// deleteTask removes a terminal (Completed or Failed) task record from the
-// store and cleans up its ownership and port-reservation entries
+// deleteTask removes a Completed or restart-exhausted Failed task record from
+// the store and cleans up its ownership and port-reservation entries
 func (m *Manager) deleteTask(t task.Task) error {
 	owner := m.taskWorker(t.ID)
 	if t.State == task.Failed && t.ContainerID != "" && owner != "" {
