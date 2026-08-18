@@ -80,16 +80,15 @@ func (n *Node) GetStats() (*stats.Stats, error) {
 		return nil, fmt.Errorf("error connecting to %v: %w", n.Address, err)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("error retrieving stats from %v: status %d", n.Address, resp.StatusCode)
-	}
-
 	defer func() {
-		err := resp.Body.Close()
-		if err != nil {
+		if err := resp.Body.Close(); err != nil {
 			log.Printf("Error closing response body: %v\n", err)
 		}
 	}()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("error retrieving stats from %v: status %d", n.Address, resp.StatusCode)
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
