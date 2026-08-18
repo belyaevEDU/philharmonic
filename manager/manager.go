@@ -316,32 +316,34 @@ func (m *Manager) getTaskByName(name string) (task.Task, bool, bool) {
 	return match, count == 1, count > 1
 }
 
-// deleteTask removes a Completed or restart-exhausted Failed task record from
-// the store and cleans up its ownership and port-reservation entries
+// deleteTask removes a task record from the store and cleans up its pending,
+// ownership, and port-reservation entries
 func (m *Manager) deleteTask(t task.Task) error {
-	owner := m.taskWorker(t.ID)
-	if t.State == task.Failed && t.ContainerID != "" && owner != "" {
-		m.bestEffortStopOldContainer(owner, t)
-	}
-
 	m.mu.Lock()
 	if m.TaskDb == nil {
 		m.mu.Unlock()
 		return errors.New("task db is nil")
 	}
-	err := m.TaskDb.Delete(t.ID)
-	owner = m.TaskWorkerMap[t.ID]
+	if err := m.TaskDb.Delete(t.ID); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	owner := m.TaskWorkerMap[t.ID]
 	delete(m.TaskWorkerMap, t.ID)
 	if owner != "" {
 		m.removeTaskID(owner, t.ID)
 	}
 	m.mu.Unlock()
 
-	// releasePorts is a no-op if the reservation was already freed
+	// durable deletion succeeded; clean up the rest
+	m.removePendingTask(t.ID)
 	if owner != "" {
 		m.releasePorts(owner, &t)
 	}
-	return err
+	if t.State == task.Failed && t.ContainerID != "" && owner != "" {
+		m.bestEffortStopOldContainer(owner, t)
+	}
+	return nil
 }
 
 func (m *Manager) pendingLen() int {
@@ -366,6 +368,24 @@ func (m *Manager) enqueuePending(te task.TaskEvent) {
 	m.pendingMu.Lock()
 	m.Pending.Enqueue(te)
 	m.pendingMu.Unlock()
+}
+
+// removePendingTask drops every queued event for id
+func (m *Manager) removePendingTask(id uuid.UUID) {
+	m.pendingMu.Lock()
+	defer m.pendingMu.Unlock()
+
+	items := make([]any, 0, m.Pending.Len())
+	for m.Pending.Len() > 0 {
+		item := m.Pending.Dequeue()
+		if te, ok := item.(task.TaskEvent); ok && te.Task.ID == id {
+			continue
+		}
+		items = append(items, item)
+	}
+	for _, item := range items {
+		m.Pending.Enqueue(item)
+	}
 }
 
 // all snapshots now to not worry about race conditions
@@ -500,9 +520,29 @@ func (m *Manager) SendWork() {
 				}
 			}
 		} else if isStop {
+			// a stop can overtake a failed/requeued start while the task is still Pending.
+			// there is no worker to contact in that case; cancel the queued start
+			// and remove the task instead of dropping the stop
+			if pending, exists := m.getTask(t.ID); exists && pending.State == task.Pending {
+				if err := m.deleteTask(pending); err != nil {
+					log.Printf("Error deleting pending task %s: %v\n", t.ID, err)
+					m.enqueuePending(te)
+				} else {
+					log.Printf("Cancelled pending task %s\n", t.ID)
+				}
+				return
+			}
 			log.Printf("Cannot stop task %s: no worker owns it\n", t.ID)
 			return
 		} else {
+			// a cancellation may have removed the task while it was sitting in the
+			// queue; skip dispatch rather than creating a container we'd have to
+			// stop immediately. (the post-201 check below is the correctness backstop
+			// if the deletion races with this check). nightmare
+			if _, exists := m.getTask(t.ID); !exists {
+				log.Printf("Task %s was cancelled while queued, skipping dispatch\n", t.ID)
+				return
+			}
 			var err error
 			w, err = m.selectAndReserveWorker(&t, "")
 			if err != nil {
@@ -583,6 +623,12 @@ func (m *Manager) SendWork() {
 			return
 		}
 
+		respTask := task.Task{}
+		decodeErr := d.Decode(&respTask)
+		if decodeErr != nil {
+			fmt.Printf("Error decoding response: %v\n", decodeErr)
+		}
+
 		m.mu.Lock()
 		if m.EventDb == nil {
 			log.Printf("Cannot store event %s: event db is nil\n", te.ID)
@@ -590,6 +636,18 @@ func (m *Manager) SendWork() {
 			log.Printf("Error storing event %s: %v\n", te.ID, err)
 		}
 		if !isStop {
+			// a cancellation may have deleted the task while the POST was in flight.
+			// if so, don't resurrect it. release the ports we reserved and issue a
+			// compensating stop for the container the worker just created
+			if _, getErr := m.TaskDb.Get(t.ID); getErr != nil {
+				m.mu.Unlock()
+				if reserved {
+					m.releasePorts(w.Address, &t)
+				}
+				log.Printf("Task %s was cancelled while starting on worker %s; stopping orphaned container\n", t.ID, w.Address)
+				m.bestEffortStopOldContainer(w.Address, respTask)
+				return
+			}
 			if m.TaskWorkerMap[t.ID] != w.Address {
 				m.WorkerTaskMap[w.Address] = append(m.WorkerTaskMap[w.Address], t.ID)
 			}
@@ -606,14 +664,11 @@ func (m *Manager) SendWork() {
 			m.releasePorts(w.Address, &t)
 		}
 
-		// the worker api returns the json of the newly created task
-		// in response to POST /tasks
-		t = task.Task{}
-		err = d.Decode(&t)
-		if err != nil {
-			fmt.Printf("Error decoding response: %v\n", err)
-			return
+		if decodeErr == nil {
+			log.Printf("%#v\n", respTask) // # adds field names
 		}
+	} else {
+		log.Println("No work in the queue")
 	}
 }
 

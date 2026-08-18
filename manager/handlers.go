@@ -106,19 +106,21 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// stopping a Completed/Failed task cleans it up from the db
-	// a Failed task is cleaned up only after it has reached the restart cap
-	if taskToStop.State == task.Completed ||
+	// stopping a Pending task cancels its queued start and removes it from the
+	// db; it has not reached a worker yet, so there is no owner to stop.
+	// Completed tasks are also cleaned up. A Failed task is cleaned up only
+	// after it has reached the restart cap
+	if taskToStop.State == task.Pending || taskToStop.State == task.Completed ||
 		(taskToStop.State == task.Failed && taskToStop.RestartCount >= MaxRestarts) {
 		if err := a.Manager.deleteTask(taskToStop); err != nil {
-			msg := fmt.Sprintf("Error deleting terminal task %s: %v\n", taskToStop.ID, err)
+			msg := fmt.Sprintf("Error deleting task %s: %v\n", taskToStop.ID, err)
 			responseErr := handlers.HttpResponseHelper(w, msg, http.StatusInternalServerError)
 			if responseErr != nil {
 				log.Printf(handlers.ErrorEncodingJson, responseErr)
 			}
 			return
 		}
-		log.Printf("Deleted terminal task %v (state %s, name %q)\n", taskToStop.ID, taskToStop.State, taskToStop.Name)
+		log.Printf("Deleted task %v (state %s, name %q)\n", taskToStop.ID, taskToStop.State, taskToStop.Name)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
