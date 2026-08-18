@@ -24,6 +24,7 @@ var statusCmd = &cobra.Command{
 	Long: `philharmonic status command.
 
 The status command allows a user to get the status of tasks from the Philharmonic manager.`,
+
 	RunE: func(cmd *cobra.Command, args []string) error {
 		manager, err := cmd.Flags().GetString("manager")
 		if err != nil {
@@ -53,7 +54,7 @@ The status command allows a user to get the status of tasks from the Philharmoni
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 5, ' ', tabwriter.TabIndent)
-		if _, err := fmt.Fprintln(w, "ID\tNAME\tCREATED\tSTATE\tCONTAINERNAME\tIMAGE\t"); err != nil {
+		if _, err := fmt.Fprintln(w, "ID\tNAME\tAGE\tSTATE\tCONTAINERNAME\tIMAGE\t"); err != nil {
 			return err
 		}
 		for _, task := range tasks {
@@ -64,8 +65,7 @@ The status command allows a user to get the status of tasks from the Philharmoni
 				start = fmt.Sprintf(timeAgoFmt, units.HumanDuration(time.Now().UTC().Sub(task.StartTime)))
 			}
 
-			state := task.State.String()[task.State]
-			// holy hell
+			state := task.State.String()
 			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t\n", task.ID, task.Name, start, state, task.Name, task.Image); err != nil {
 				return err
 			}
