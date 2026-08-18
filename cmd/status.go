@@ -39,6 +39,21 @@ In that mode, the final two columns show the current restart count and latest fa
 			return err
 		}
 
+		filter = strings.TrimSpace(filter)
+		if filter != "" {
+			valid := false
+			for _, s := range knownStateNames() {
+				if strings.EqualFold(s, filter) { // case-insensitive equal
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				return fmt.Errorf("invalid --filter %q: want one of %s",
+					filter, strings.Join(knownStateNames(), ", "))
+			}
+		}
+
 		url := fmt.Sprintf("http://%s/tasks", manager)
 		resp, err := http.Get(url) // #nosec G107
 		if err != nil {
@@ -87,7 +102,7 @@ func writeTaskStatus(w io.Writer, tasks []*task.Task, filter string) error {
 	}
 
 	tw := tabwriter.NewWriter(w, 0, 0, 5, ' ', tabwriter.TabIndent)
-	header := "ID\tNAME\tAGE\tSTATE\tCONTAINERNAME\tIMAGE\t"
+	header := "ID\tNAME\tAGE\tSTATE\tCONTAINERID\tIMAGE\t"
 	if showPorts {
 		header += "PORTS\t"
 	}
@@ -99,11 +114,11 @@ func writeTaskStatus(w io.Writer, tasks []*task.Task, filter string) error {
 	}
 
 	for _, t := range visibleTasks {
-		var start string
+		var age string
 		if t.StartTime.IsZero() {
-			start = fmt.Sprintf(timeAgoFmt, units.HumanDuration(time.Duration(0)))
+			age = "-"
 		} else {
-			start = fmt.Sprintf(timeAgoFmt, units.HumanDuration(time.Now().UTC().Sub(t.StartTime)))
+			age = fmt.Sprintf(timeAgoFmt, units.HumanDuration(time.Now().UTC().Sub(t.StartTime)))
 		}
 
 		var err error
@@ -111,24 +126,24 @@ func writeTaskStatus(w io.Writer, tasks []*task.Task, filter string) error {
 		case showPorts && showFailureDetails:
 			_, err = fmt.Fprintf(
 				tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t\n",
-				t.ID, t.Name, start, t.State.String(), t.Name, t.Image,
+				t.ID, t.Name, age, t.State.String(), statusContainerID(t), t.Image,
 				taskPorts(t), t.RestartCount, statusFailure(t.FailureReason),
 			)
 		case showPorts:
 			_, err = fmt.Fprintf(
 				tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
-				t.ID, t.Name, start, t.State.String(), t.Name, t.Image, taskPorts(t),
+				t.ID, t.Name, age, t.State.String(), statusContainerID(t), t.Image, taskPorts(t),
 			)
 		case showFailureDetails:
 			_, err = fmt.Fprintf(
 				tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t\n",
-				t.ID, t.Name, start, t.State.String(), t.Name, t.Image,
+				t.ID, t.Name, age, t.State.String(), statusContainerID(t), t.Image,
 				t.RestartCount, statusFailure(t.FailureReason),
 			)
 		default:
 			_, err = fmt.Fprintf(
 				tw, "%s\t%s\t%s\t%s\t%s\t%s\t\n",
-				t.ID, t.Name, start, t.State.String(), t.Name, t.Image,
+				t.ID, t.Name, age, t.State.String(), statusContainerID(t), t.Image,
 			)
 		}
 		if err != nil {
@@ -180,8 +195,30 @@ func statusFailure(reason string) string {
 	return strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(reason)
 }
 
+// like 'docker ps', we take the first 12 characters of the container id to be rendered
+func statusContainerID(t *task.Task) string {
+	id := strings.TrimSpace(t.ContainerID)
+	if id == "" {
+		return "-"
+	}
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+func knownStateNames() []string {
+	return []string{
+		task.Pending.String(),
+		task.Scheduled.String(),
+		task.Running.String(),
+		task.Completed.String(),
+		task.Failed.String(),
+	}
+}
+
 func init() {
 	rootCmd.AddCommand(statusCmd)
 	statusCmd.Flags().StringP("manager", "m", "localhost:5555", "Manager to talk to")
-	statusCmd.Flags().StringP("filter", "f", "", "Filter tasks by state")
+	statusCmd.Flags().StringP("filter", "f", "", "Filter tasks by state (one of Pending, Scheduled, Running, Completed, Failed)")
 }
