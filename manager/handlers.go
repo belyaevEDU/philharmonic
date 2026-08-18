@@ -106,6 +106,22 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// calling stop on a task with state Completed or Failed
+	// cleans the task up from the dbs
+	if taskToStop.State == task.Completed || taskToStop.State == task.Failed {
+		if err := a.Manager.deleteTask(taskToStop); err != nil {
+			msg := fmt.Sprintf("Error deleting terminal task %s: %v\n", taskToStop.ID, err)
+			responseErr := handlers.HttpResponseHelper(w, msg, http.StatusInternalServerError)
+			if responseErr != nil {
+				log.Printf(handlers.ErrorEncodingJson, responseErr)
+			}
+			return
+		}
+		log.Printf("Deleted terminal task %v (state %s, name %q)\n", taskToStop.ID, taskToStop.State, taskToStop.Name)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	taskCopy := taskToStop
 	taskCopy.State = task.Completed
 
