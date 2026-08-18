@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/belyaevedu/philharmonic/httpclient"
 	"github.com/belyaevedu/philharmonic/manager"
 	"github.com/belyaevedu/philharmonic/node"
 	"github.com/belyaevedu/philharmonic/scheduler"
@@ -35,6 +36,11 @@ type Config struct {
 	Scheduler *SchedulerConfig `yaml:"scheduler"`
 	Task      *TaskConfig      `yaml:"task"`
 	Client    *ClientConfig    `yaml:"client"`
+	HTTP      *HTTPConfig      `yaml:"http"`
+}
+
+type HTTPConfig struct {
+	ClientTimeout *string `yaml:"client_timeout"` // duration
 }
 
 type ManagerConfig struct {
@@ -51,7 +57,6 @@ type ManagerConfig struct {
 	MaxRestarts        *int    `yaml:"max_restarts"`
 	LoopInterval       *string `yaml:"loop_interval"`        // duration
 	ApiShutdownTimeout *string `yaml:"api_shutdown_timeout"` // duration
-	HTTPClientTimeout  *string `yaml:"http_client_timeout"`  // duration
 }
 
 type WorkerConfig struct {
@@ -70,7 +75,6 @@ type NodeConfig struct {
 	StatsQueryMaxRetries  *int    `yaml:"stats_query_max_retries"`
 	StatsQuerySleepPeriod *string `yaml:"stats_query_sleep_period"` // duration
 	PortsQueryTimeout     *string `yaml:"ports_query_timeout"`      // duration
-	HTTPClientTimeout     *string `yaml:"http_client_timeout"`      // duration
 }
 
 type SchedulerConfig struct {
@@ -87,8 +91,7 @@ type TaskConfig struct {
 
 // for cli's 'nodes', 'status', 'run', 'stop'
 type ClientConfig struct {
-	Manager           *string `yaml:"manager"`
-	HTTPClientTimeout *string `yaml:"http_client_timeout"` // duration
+	Manager *string `yaml:"manager"`
 }
 
 var (
@@ -213,6 +216,10 @@ func setSlice(cmd *cobra.Command, name string, v []string) error {
 // runtime tunable overrides (package vars <- config), with validation.
 // must be called after loadConfig, from PersistentPreRunE
 func applyRuntimeConfig(cmd *cobra.Command) error {
+	if err := applyHTTPRuntime(cfg.HTTP); err != nil {
+		return err
+	}
+
 	switch cmd.Name() {
 	case "manager":
 		if err := applyManagerRuntime(cfg.Manager); err != nil {
@@ -233,15 +240,24 @@ func applyRuntimeConfig(cmd *cobra.Command) error {
 		// the worker builds docker "exec" probes via task.Normalized
 		return applyTaskRuntime(cfg.Task)
 	case "nodes":
-		if err := applyNodeRuntime(cfg.Node); err != nil {
-			return err
-		}
-		return applyClientRuntime(cfg.Client)
+		return applyNodeRuntime(cfg.Node)
 	case "run", "status", "stop":
-		return applyClientRuntime(cfg.Client)
+		return nil
 	default:
 		return nil
 	}
+}
+
+func applyHTTPRuntime(h *HTTPConfig) error {
+	if h == nil || h.ClientTimeout == nil {
+		return nil
+	}
+	d, err := parsePosDuration("http.client_timeout", *h.ClientTimeout)
+	if err != nil {
+		return err
+	}
+	httpclient.ClientTimeout = d
+	return nil
 }
 
 func applyManagerRuntime(m *ManagerConfig) error {
@@ -291,13 +307,6 @@ func applyManagerRuntime(m *ManagerConfig) error {
 			return err
 		}
 		manager.ApiShutdownTimeout = d
-	}
-	if v := m.HTTPClientTimeout; v != nil {
-		d, err := parsePosDuration("manager.http_client_timeout", *v)
-		if err != nil {
-			return err
-		}
-		manager.HTTPClientTimeout = d
 	}
 	return nil
 }
@@ -359,25 +368,6 @@ func applyNodeRuntime(n *NodeConfig) error {
 		}
 		node.PortsQueryTimeout = d
 	}
-	if v := n.HTTPClientTimeout; v != nil {
-		d, err := parsePosDuration("node.http_client_timeout", *v)
-		if err != nil {
-			return err
-		}
-		node.HTTPClientTimeout = d
-	}
-	return nil
-}
-
-func applyClientRuntime(c *ClientConfig) error {
-	if c == nil || c.HTTPClientTimeout == nil {
-		return nil
-	}
-	d, err := parsePosDuration("client.http_client_timeout", *c.HTTPClientTimeout)
-	if err != nil {
-		return err
-	}
-	HTTPClientTimeout = d
 	return nil
 }
 
