@@ -77,4 +77,11 @@ func (i *InMemoryStore[T]) Count() (int, error) {
 	return len(i.db), nil
 }
 
+func (i *InMemoryStore[T]) Delete(key uuid.UUID) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	delete(i.db, key)
+	return nil
+}
+
 func (i *InMemoryStore[T]) Close() error { return nil }
