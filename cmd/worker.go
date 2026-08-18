@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/belyaevedu/philharmonic/worker"
@@ -17,7 +18,11 @@ var workerCmd = &cobra.Command{
 	Short: "worker command to operate a Cube worker node.",
 	Long: `philharmonic worker command.
 
-The worker runs tasks via Docker and responds to manager's requests about task states.`,
+The worker runs tasks via Docker and responds to manager's requests about task states.
+
+When --name is empty the worker defaults to the host's hostname. With
+--dbtype bolt the task DB filename is derived from the name (<name>_tasks.db
+by default), so the name and the DB file are coupled.`,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		host, err := cmd.Flags().GetString("host")
@@ -34,7 +39,11 @@ The worker runs tasks via Docker and responds to manager's requests about task s
 		}
 
 		if name == "" {
-			name = fmt.Sprintf("worker-%s", uuid.New())
+			hostname, herr := os.Hostname()
+			if herr != nil || strings.TrimSpace(hostname) == "" {
+				hostname = uuid.NewString()
+			}
+			name = hostname
 		}
 		dbType, err := cmd.Flags().GetString("dbtype")
 		if err != nil {
@@ -63,7 +72,14 @@ The worker runs tasks via Docker and responds to manager's requests about task s
 		select {
 		case err := <-errCh:
 			stop()
-			return err
+			runErr := err
+			if serr := api.Shutdown(); serr != nil && runErr == nil {
+				runErr = serr
+			}
+			if cerr := w.Close(); cerr != nil && runErr == nil {
+				runErr = cerr
+			}
+			return runErr
 		case <-ctx.Done():
 		}
 		stop()
@@ -79,7 +95,7 @@ func init() {
 	rootCmd.AddCommand(workerCmd)
 	workerCmd.Flags().StringP("host", "H", "0.0.0.0", "Hostname or IP address")
 	workerCmd.Flags().IntP("port", "p", 5556, "Port on which to listen")
-	workerCmd.Flags().StringP("name", "n", "", "Name of the worker (auto-generated as worker-<uuid> when empty)")
+	workerCmd.Flags().StringP("name", "n", "", "Name of the worker (defaults to the host's hostname when empty)")
 	workerCmd.Flags().StringP(
 		"dbtype", "d", "memory",
 		"Type of data storage to use for tasks (\"memory\" or \"bolt\")",
