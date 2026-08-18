@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/belyaevedu/philharmonic/worker"
 	"github.com/google/uuid"
@@ -30,24 +33,46 @@ The worker runs tasks via Docker and responds to manager's requests about task s
 		if err != nil {
 			return err
 		}
+
+		if name == "" {
+			name = fmt.Sprintf("worker-%s", uuid.New())
+		}
 		dbType, err := cmd.Flags().GetString("dbtype")
 		if err != nil {
 			return err
 		}
 
 		log.Println("Starting worker...")
+
+		log.Printf("Worker name: %s\n", name)
 		w, err := worker.New(name, dbType)
 		if err != nil {
 			return err
 		}
 
-		ctx := context.Background()
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+
 		go w.RunTasks(ctx)
 		go w.CollectStats(ctx)
 		go w.UpdateTasks(ctx)
 
 		api := worker.Api{Address: host, Port: port, Worker: w}
-		return api.Start()
+
+		errCh := make(chan error, 1)
+		go func() { errCh <- api.Start() }()
+
+		select {
+		case err := <-errCh:
+			stop()
+			return err
+		case <-ctx.Done():
+		}
+		stop()
+		runErr := api.Shutdown()
+		if cerr := w.Close(); cerr != nil && runErr == nil {
+			runErr = cerr
+		}
+		return runErr
 	},
 }
 
@@ -55,7 +80,7 @@ func init() {
 	rootCmd.AddCommand(workerCmd)
 	workerCmd.Flags().StringP("host", "H", "0.0.0.0", "Hostname or IP address")
 	workerCmd.Flags().IntP("port", "p", 5556, "Port on which to listen")
-	workerCmd.Flags().StringP("name", "n", fmt.Sprintf("worker-%s", uuid.New().String()), "Name of the worker")
+	workerCmd.Flags().StringP("name", "n", "", "Name of the worker (auto-generated as worker-<uuid> when empty)")
 	workerCmd.Flags().StringP(
 		"dbtype", "d", "memory",
 		"Type of data storage to use for tasks (\"memory\" or \"bolt\")",
