@@ -58,6 +58,6 @@ func init() {
 	workerCmd.Flags().StringP("name", "n", fmt.Sprintf("worker-%s", uuid.New().String()), "Name of the worker")
 	workerCmd.Flags().StringP(
 		"dbtype", "d", "memory",
-		"Type of data storage to use for tasks (\"memory\" or \"boltdb\")",
+		"Type of data storage to use for tasks (\"memory\" or \"bolt\")",
 	)
 }

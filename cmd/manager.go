@@ -69,6 +69,6 @@ func init() {
 	managerCmd.Flags().StringP("scheduler", "s", "epvm", "Name of scheduler to use")
 	managerCmd.Flags().StringP(
 		"dbtype", "d", "memory",
-		"Type of data storage to use for tasks (\"memory\" or \"boltdb\")",
+		"Type of data storage to use for tasks (\"memory\" or \"bolt\")",
 	)
 }
