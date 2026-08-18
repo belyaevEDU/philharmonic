@@ -16,15 +16,14 @@ func HTTPWithRetry(f func(string) (*http.Response, error), url string, maxTries 
 	var err error
 	for i := 0; i < maxTries; i++ {
 		resp, err = f(url)
-		if err != nil {
-			fmt.Printf("Error calling url %v: %v\n", url, err)
-			time.Sleep(period)
-			if i != (maxTries - 1) {
-				err = nil
-			}
-		} else {
+		if err == nil {
 			break
 		}
+		fmt.Printf("Error calling url %v: %v\n", url, err)
+		if i == maxTries-1 {
+			break
+		}
+		time.Sleep(period)
 	}
 
 	return resp, err
