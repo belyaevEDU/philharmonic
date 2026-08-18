@@ -77,16 +77,31 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tID, err := uuid.Parse(taskID)
-	if err != nil {
-		log.Println("Non-UUID taskID passed in the request.")
-		w.WriteHeader(http.StatusBadRequest)
-		return
+	var taskToStop task.Task
+	var found bool
+
+	if tID, err := uuid.Parse(taskID); err == nil {
+		taskToStop, found = a.Manager.getTask(tID)
+		if !found {
+			log.Printf("No task with ID %v found\n", tID)
+		}
+	} else {
+		var ambiguous bool
+		taskToStop, found, ambiguous = a.Manager.getTaskByName(taskID)
+		switch {
+		case ambiguous:
+			msg := fmt.Sprintf("multiple tasks named %q exist; stop by task UUID instead", taskID)
+			responseErr := handlers.HttpResponseHelper(w, msg, http.StatusConflict)
+			if responseErr != nil {
+				log.Printf(handlers.ErrorEncodingJson, responseErr)
+			}
+			return
+		case !found:
+			log.Printf("No task with ID or name %q found\n", taskID)
+		}
 	}
 
-	taskToStop, exists := a.Manager.getTask(tID)
-	if !exists {
-		log.Printf("No task with ID %v found\n", tID)
+	if !found {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -101,8 +116,7 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		Task:      taskCopy,
 	}
 
-	err = a.Manager.AddTask(te)
-	if err != nil {
+	if err := a.Manager.AddTask(te); err != nil {
 		msg := fmt.Sprintf("Error queuing stop for task %s: %v\n", taskToStop.ID, err)
 		responseErr := handlers.HttpResponseHelper(w, msg, http.StatusInternalServerError)
 		if responseErr != nil {
