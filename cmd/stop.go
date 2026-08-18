@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 
 	"github.com/spf13/cobra"
 )
@@ -17,23 +19,28 @@ You may give either the task's UUID or the task's name.`,
 
 	SilenceUsage: true,
 
-	Args: cobra.MinimumNArgs(1),
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		manager, err := cmd.Flags().GetString("manager")
 		if err != nil {
 			return err
 		}
 
-		url := fmt.Sprintf("http://%s/tasks/%s", manager, args[0])
+		// a name can contain characters that break an unescaped URL segment
+		// (/, %, ?, spaces, ...); the manager enforces no charset on names at
+		// submit time (Docker rejects bad ones later), so such tasks can exist.
+		// PathEscape keeps a name from breaking or misrouting the request.
+		encoded := url.PathEscape(args[0])
+		requestURL := fmt.Sprintf("http://%s/tasks/%s", manager, encoded)
 		client := &http.Client{}
-		req, err := http.NewRequest(http.MethodDelete, url, nil)
+		req, err := http.NewRequest(http.MethodDelete, requestURL, nil)
 		if err != nil {
-			return fmt.Errorf("error creating request %s: %w", url, err)
+			return fmt.Errorf("error creating request %s: %w", requestURL, err)
 		}
 
 		resp, err := client.Do(req)
 		if err != nil {
-			return fmt.Errorf("error connecting to %s: %w", url, err)
+			return fmt.Errorf("error connecting to %s: %w", requestURL, err)
 		}
 		defer func() {
 			if err := resp.Body.Close(); err != nil {
@@ -42,7 +49,11 @@ You may give either the task's UUID or the task's name.`,
 		}()
 
 		if resp.StatusCode != http.StatusNoContent {
-			return fmt.Errorf("error sending request: unexpected status %d from %s", resp.StatusCode, url)
+			errBody, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf(
+				"error sending request: unexpected status %d from %s: %s",
+				resp.StatusCode, requestURL, responseBodyMessage(errBody),
+			)
 		}
 
 		fmt.Printf("Sent request to stop task %v.\n", args[0])
