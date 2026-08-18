@@ -249,9 +249,11 @@ func (m *Manager) AddTask(te task.TaskEvent) error {
 			return fmt.Errorf("checking task %s: %w", te.Task.ID, err)
 		}
 
-		// holding the name for the whole lifecycle up to Completed
-		// Failed still holds: a Failed task may be restarted back to Scheduled
-		// and reuses the name
+		// a task holds its Name for its whole lifecycle, including Completed.
+		// Failed holds because a Failed task may be restarted back to Scheduled
+		// and reuse the name.
+		// Completed holds until the record is removed from the store:
+		// a stop on an already-Completed task deletes it, freeing the name
 		queued := te.Task
 		if queued.Name != "" {
 			// restricting the user from setting the task's name to be a UUID
@@ -283,7 +285,7 @@ func isUUIDLike(name string) bool {
 	return err == nil
 }
 
-// reports whether any non-Completed task already holds the given Name.
+// reports whether any task already holds the given Name.
 // caller must hold m.mu
 func (m *Manager) taskNameInUseLocked(name string) bool {
 	persisted, err := m.TaskDb.List()
@@ -295,9 +297,7 @@ func (m *Manager) taskNameInUseLocked(name string) bool {
 		if t == nil || t.Name != name {
 			continue
 		}
-		if t.State != task.Completed {
-			return true
-		}
+		return true // lol
 	}
 	return false
 }
@@ -312,6 +312,34 @@ func (m *Manager) getTaskByName(name string) (task.Task, bool, bool) {
 		}
 	}
 	return match, count == 1, count > 1
+}
+
+// deleteTask removes a terminal (Completed or Failed) task record from the
+// store and cleans up its ownership and port-reservation entries
+func (m *Manager) deleteTask(t task.Task) error {
+	owner := m.taskWorker(t.ID)
+	if t.State == task.Failed && t.ContainerID != "" && owner != "" {
+		m.bestEffortStopOldContainer(owner, t)
+	}
+
+	m.mu.Lock()
+	if m.TaskDb == nil {
+		m.mu.Unlock()
+		return errors.New("task db is nil")
+	}
+	err := m.TaskDb.Delete(t.ID)
+	owner = m.TaskWorkerMap[t.ID]
+	delete(m.TaskWorkerMap, t.ID)
+	if owner != "" {
+		m.removeTaskID(owner, t.ID)
+	}
+	m.mu.Unlock()
+
+	// releasePorts is a no-op if the reservation was already freed
+	if owner != "" {
+		m.releasePorts(owner, &t)
+	}
+	return err
 }
 
 func (m *Manager) pendingLen() int {
