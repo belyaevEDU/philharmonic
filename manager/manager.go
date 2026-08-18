@@ -682,9 +682,7 @@ func (m *Manager) UpdateTasks(ctx context.Context) {
 	ticker := time.NewTicker(LoopInterval)
 	defer ticker.Stop()
 	for {
-		log.Println("[Manager] Checking for task updates from workers")
 		m.updateTasks()
-		log.Printf("Task updates completed. Sleeping for %s", LoopInterval)
 		select {
 		case <-ctx.Done():
 			return
@@ -697,10 +695,8 @@ func (m *Manager) DoHealthChecks(ctx context.Context) {
 	ticker := time.NewTicker(LoopInterval)
 	defer ticker.Stop()
 	for {
-		log.Println("[Manager] Reconciling task health checkers")
 		m.reconcileCheckers(ctx)
 		m.restartFailedTasks()
-		log.Printf("Sleeping for %s", LoopInterval)
 		select {
 		case <-ctx.Done():
 			return
@@ -1168,9 +1164,7 @@ func (m *Manager) ProcessTasks(ctx context.Context) {
 	ticker := time.NewTicker(LoopInterval)
 	defer ticker.Stop()
 	for {
-		log.Println("[Manager] Processing any tasks in the queue")
 		m.SendWork()
-		log.Printf("Sleeping for %s", LoopInterval)
 		select {
 		case <-ctx.Done():
 			return
