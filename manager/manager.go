@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -519,7 +520,13 @@ func (m *Manager) SendWork() {
 				te.Timestamp = time.Now().UTC()
 			}
 		}
-		log.Printf("Pulled %v off pending queue\n", t)
+		if isStop {
+			log.Printf("Stopping task %s on worker %s\n", t.ID, w.Address)
+		} else if t.RestartCount > 0 {
+			log.Printf("Restarting task %s on worker %s\n", t.ID, w.Address)
+		} else {
+			log.Printf("Starting task %s on worker %s\n", t.ID, w.Address)
+		}
 
 		data, err := json.Marshal(te)
 		if err != nil {
@@ -606,9 +613,6 @@ func (m *Manager) SendWork() {
 			fmt.Printf("Error decoding response: %v\n", err)
 			return
 		}
-		log.Printf("%#v\n", t) // # adds field names
-	} else {
-		log.Println("No work in the queue")
 	}
 }
 
@@ -638,8 +642,6 @@ func (m *Manager) fetchTasksFromWorker(worker string) ([]*task.Task, error) {
 
 func (m *Manager) updateTasks() {
 	for _, n := range m.WorkerNodes {
-		log.Printf("Checking worker %v for task updates\n", n.Address)
-
 		tasks, err := m.fetchTasksFromWorker(n.Address)
 		if err != nil {
 			log.Printf("Error fetching tasks from %s: %v\n", n.Address, err)
@@ -647,8 +649,6 @@ func (m *Manager) updateTasks() {
 		}
 
 		for _, t := range tasks {
-			log.Printf("Attempting to update task %s\n", t.ID.String())
-
 			m.mu.Lock()
 			if m.TaskDb == nil {
 				m.mu.Unlock()
@@ -670,10 +670,6 @@ func (m *Manager) updateTasks() {
 			// a worker can still be returning a snapshot from the previous restart attempt
 			// while the manager has already queued the next one
 			if t.RestartCount != persisted.RestartCount {
-				log.Printf(
-					"Ignoring stale update for task %s: worker restart count %d, manager restart count %d\n",
-					t.ID, t.RestartCount, persisted.RestartCount,
-				)
 				m.mu.Unlock()
 				continue
 			}
@@ -699,8 +695,13 @@ func (m *Manager) updateTasks() {
 			}
 			// else: terminal-failed here
 
+			changed := !reflect.DeepEqual(*persisted, updated)
 			if err := m.TaskDb.Put(t.ID, &updated); err != nil {
 				log.Printf("Error updating task %s: %v\n", t.ID, err)
+			} else if changed && persisted.State != updated.State {
+				log.Printf("Task %s changed state from %s to %s\n", t.ID, persisted.State, updated.State)
+			} else if changed {
+				log.Printf("Task %s changed\n", t.ID)
 			}
 			m.mu.Unlock()
 		}
@@ -774,6 +775,8 @@ func (m *Manager) restartTask(t task.Task) error {
 		next.ContainerID = ""
 		next.HostPorts = nil
 	}
+
+	log.Printf("Restarting task %s on worker %s\n", t.ID, w.Address)
 
 	te := task.TaskEvent{
 		ID:        uuid.New(),
@@ -854,7 +857,7 @@ func (m *Manager) restartTask(t task.Task) error {
 		return nil
 	}
 
-	log.Printf("Task restarted: %#v\n", newTask)
+	log.Printf("Restarted task %s on worker %s\n", t.ID, w.Address)
 	return nil
 }
 
