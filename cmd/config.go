@@ -83,7 +83,7 @@ type TaskConfig struct {
 	HealthCheckDefaultStartPeriod *int `yaml:"health_check_default_start_period"`
 }
 
-// for cli's 'node', 'status', 'run', 'stop'
+// for cli's 'nodes', 'status', 'run', 'stop'
 type ClientConfig struct {
 	Manager *string `yaml:"manager"`
 }
@@ -174,7 +174,7 @@ func applyConfig(cmd *cobra.Command) error {
 				return err
 			}
 		}
-	case "node", "run", "status", "stop":
+	case "nodes", "run", "status", "stop":
 		if cfg.Client != nil {
 			if err := setStr(cmd, "manager", cfg.Client.Manager); err != nil {
 				return err
@@ -229,7 +229,7 @@ func applyRuntimeConfig(cmd *cobra.Command) error {
 		}
 		// the worker builds docker "exec" probes via task.Normalized
 		return applyTaskRuntime(cfg.Task)
-	case "node":
+	case "nodes":
 		return applyNodeRuntime(cfg.Node)
 	default:
 		return nil
