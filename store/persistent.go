@@ -123,3 +123,12 @@ func (s *BoltStore[T]) Count() (int, error) {
 	}
 	return count, nil
 }
+
+func (s *BoltStore[T]) Delete(key uuid.UUID) error {
+	return s.Db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(s.Bucket))
+		// bolt's Delete is a no-op on a missing key, which is the desired
+		// behavior for an idempotent cleanup
+		return b.Delete(key[:])
+	})
+}

@@ -42,7 +42,9 @@ const (
 	HealthCheckHTTP HealthCheckType = "http"
 	HealthCheckTCP  HealthCheckType = "tcp"
 	HealthCheckExec HealthCheckType = "exec"
+)
 
+var (
 	HealthCheckDefaultInterval    = 30
 	HealthCheckDefaultTimeout     = 5
 	HealthCheckDefaultRetries     = 3

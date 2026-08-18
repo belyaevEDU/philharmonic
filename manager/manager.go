@@ -29,13 +29,16 @@ const (
 	WorkerTasksURL = "http://%s/tasks"
 	WorkerRole     = "worker"
 
+	DbFilemode = os.FileMode(0600)
+)
+
+var (
 	MaxRestarts = 3
 
 	LoopInterval = 10 * time.Second
 
 	DbTasksFile   = "tasks.db"
 	DbEventsFile  = "events.db"
-	DbFilemode    = os.FileMode(0600)
 	DbTaskBucket  = "tasks"
 	DbEventBucket = "events"
 )
@@ -73,12 +76,13 @@ func New(workers []string, schedulerType, dbType string) (*Manager, error) {
 
 	var s scheduler.Scheduler
 	switch schedulerType {
+	case "", scheduler.EpvmDefaultName:
+		s = scheduler.NewEpvm()
 	case scheduler.RoundRobinDefaultName:
 		s = scheduler.NewRoundRobin()
-	case scheduler.EpvmDefaultName:
-		s = scheduler.NewEpvm()
 	default:
-		s = scheduler.NewRoundRobin()
+		return nil, fmt.Errorf("unknown scheduler type %q: want %q or %q",
+			schedulerType, scheduler.EpvmDefaultName, scheduler.RoundRobinDefaultName)
 	}
 
 	m := Manager{
@@ -245,7 +249,23 @@ func (m *Manager) AddTask(te task.TaskEvent) error {
 			return fmt.Errorf("checking task %s: %w", te.Task.ID, err)
 		}
 
+		// a task holds its Name for its whole lifecycle, including Completed.
+		// Failed holds while it can still be restarted back to Scheduled and
+		// reuse the name; once it reaches MaxRestarts, a stop can delete it.
+		// Completed holds until the record is removed from the store:
+		// a stop on an already-Completed task deletes it, freeing the name
 		queued := te.Task
+		if queued.Name != "" {
+			// restricting the user from setting the task's name to be a UUID
+			if isUUIDLike(queued.Name) {
+				m.mu.Unlock()
+				return fmt.Errorf("task name must not be a UUID: %q", queued.Name)
+			}
+			if clash := m.taskNameInUseLocked(queued.Name); clash {
+				m.mu.Unlock()
+				return fmt.Errorf("task name %q already in use", queued.Name)
+			}
+		}
 		queued.State = task.Pending // updated, not yet sent to a worker
 		if err := m.TaskDb.Put(queued.ID, &queued); err != nil {
 			m.mu.Unlock()
@@ -258,6 +278,68 @@ func (m *Manager) AddTask(te task.TaskEvent) error {
 	m.Pending.Enqueue(te)
 	m.pendingMu.Unlock()
 	return nil
+}
+
+func isUUIDLike(name string) bool {
+	_, err := uuid.Parse(name)
+	return err == nil
+}
+
+// reports whether any task already holds the given Name.
+// caller must hold m.mu
+func (m *Manager) taskNameInUseLocked(name string) bool {
+	persisted, err := m.TaskDb.List()
+	if err != nil {
+		log.Printf("Error listing tasks for name-uniqueness check: %v\n", err)
+		return false // don't block the submit on a transient store error
+	}
+	for _, t := range persisted {
+		if t == nil || t.Name != name {
+			continue
+		}
+		return true // lol
+	}
+	return false
+}
+
+func (m *Manager) getTaskByName(name string) (task.Task, bool, bool) {
+	var match task.Task
+	count := 0
+	for _, t := range m.getTasks() {
+		if t.Name == name {
+			match = t
+			count++
+		}
+	}
+	return match, count == 1, count > 1
+}
+
+// deleteTask removes a Completed or restart-exhausted Failed task record from
+// the store and cleans up its ownership and port-reservation entries
+func (m *Manager) deleteTask(t task.Task) error {
+	owner := m.taskWorker(t.ID)
+	if t.State == task.Failed && t.ContainerID != "" && owner != "" {
+		m.bestEffortStopOldContainer(owner, t)
+	}
+
+	m.mu.Lock()
+	if m.TaskDb == nil {
+		m.mu.Unlock()
+		return errors.New("task db is nil")
+	}
+	err := m.TaskDb.Delete(t.ID)
+	owner = m.TaskWorkerMap[t.ID]
+	delete(m.TaskWorkerMap, t.ID)
+	if owner != "" {
+		m.removeTaskID(owner, t.ID)
+	}
+	m.mu.Unlock()
+
+	// releasePorts is a no-op if the reservation was already freed
+	if owner != "" {
+		m.releasePorts(owner, &t)
+	}
+	return err
 }
 
 func (m *Manager) pendingLen() int {
@@ -629,9 +711,7 @@ func (m *Manager) UpdateTasks(ctx context.Context) {
 	ticker := time.NewTicker(LoopInterval)
 	defer ticker.Stop()
 	for {
-		log.Println("[Manager] Checking for task updates from workers")
 		m.updateTasks()
-		log.Println("Task updates completed. Sleeping for 10 seconds")
 		select {
 		case <-ctx.Done():
 			return
@@ -644,10 +724,8 @@ func (m *Manager) DoHealthChecks(ctx context.Context) {
 	ticker := time.NewTicker(LoopInterval)
 	defer ticker.Stop()
 	for {
-		log.Println("[Manager] Reconciling task health checkers")
 		m.reconcileCheckers(ctx)
 		m.restartFailedTasks()
-		log.Println("Sleeping for 10 seconds")
 		select {
 		case <-ctx.Done():
 			return
@@ -1115,9 +1193,7 @@ func (m *Manager) ProcessTasks(ctx context.Context) {
 	ticker := time.NewTicker(LoopInterval)
 	defer ticker.Stop()
 	for {
-		log.Println("[Manager] Processing any tasks in the queue")
 		m.SendWork()
-		log.Println("Sleeping for 10 seconds")
 		select {
 		case <-ctx.Done():
 			return

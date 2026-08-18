@@ -28,12 +28,17 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	te.ID = uuid.New()
+
 	if te.State != task.Completed && te.Task.State != task.Completed {
 		if err := task.ValidatePortMappings(te.Task.Ports); err != nil {
 			if responseErr := handlers.HttpResponseHelper(w, err.Error(), http.StatusBadRequest); responseErr != nil {
 				log.Printf(handlers.ErrorEncodingJson, responseErr)
 			}
 			return
+		}
+		if te.Task.ID == uuid.Nil {
+			te.Task.ID = uuid.New()
 		}
 	}
 
@@ -72,17 +77,49 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tID, err := uuid.Parse(taskID)
-	if err != nil {
-		log.Println("Non-UUID taskID passed in the request.")
-		w.WriteHeader(http.StatusBadRequest)
+	var taskToStop task.Task
+	var found bool
+
+	if tID, err := uuid.Parse(taskID); err == nil {
+		taskToStop, found = a.Manager.getTask(tID)
+		if !found {
+			log.Printf("No task with ID %v found\n", tID)
+		}
+	} else {
+		var ambiguous bool
+		taskToStop, found, ambiguous = a.Manager.getTaskByName(taskID)
+		switch {
+		case ambiguous:
+			msg := fmt.Sprintf("multiple tasks named %q exist; stop by task UUID instead", taskID)
+			responseErr := handlers.HttpResponseHelper(w, msg, http.StatusConflict)
+			if responseErr != nil {
+				log.Printf(handlers.ErrorEncodingJson, responseErr)
+			}
+			return
+		case !found:
+			log.Printf("No task with ID or name %q found\n", taskID)
+		}
+	}
+
+	if !found {
+		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
-	taskToStop, exists := a.Manager.getTask(tID)
-	if !exists {
-		log.Printf("No task with ID %v found\n", tID)
-		w.WriteHeader(http.StatusNotFound)
+	// stopping a Completed/Failed task cleans it up from the db
+	// a Failed task is cleaned up only after it has reached the restart cap
+	if taskToStop.State == task.Completed ||
+		(taskToStop.State == task.Failed && taskToStop.RestartCount >= MaxRestarts) {
+		if err := a.Manager.deleteTask(taskToStop); err != nil {
+			msg := fmt.Sprintf("Error deleting terminal task %s: %v\n", taskToStop.ID, err)
+			responseErr := handlers.HttpResponseHelper(w, msg, http.StatusInternalServerError)
+			if responseErr != nil {
+				log.Printf(handlers.ErrorEncodingJson, responseErr)
+			}
+			return
+		}
+		log.Printf("Deleted terminal task %v (state %s, name %q)\n", taskToStop.ID, taskToStop.State, taskToStop.Name)
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
@@ -96,8 +133,7 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		Task:      taskCopy,
 	}
 
-	err = a.Manager.AddTask(te)
-	if err != nil {
+	if err := a.Manager.AddTask(te); err != nil {
 		msg := fmt.Sprintf("Error queuing stop for task %s: %v\n", taskToStop.ID, err)
 		responseErr := handlers.HttpResponseHelper(w, msg, http.StatusInternalServerError)
 		if responseErr != nil {
