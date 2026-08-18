@@ -3,14 +3,14 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/belyaevedu/philharmonic/handlers"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/spf13/cobra"
 )
@@ -39,17 +39,13 @@ The run command starts a new task.`,
 			return err
 		}
 
-		if !fileExists(fullFilePath) {
-			return fmt.Errorf("file %s does not exist", filename)
-		}
-
-		fmt.Printf("Using manager: %v\n", manager)
-		fmt.Printf("Using file: %v\n", fullFilePath)
-
 		data, err := readFile(filename)
 		if err != nil {
 			return fmt.Errorf("unable to read file %s: %w", filename, err)
 		}
+
+		fmt.Printf("Using manager: %v\n", manager)
+		fmt.Printf("Using file: %v\n", fullFilePath)
 
 		url := fmt.Sprintf("http://%s/tasks", manager)
 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
@@ -64,7 +60,11 @@ The run command starts a new task.`,
 		}()
 
 		if resp.StatusCode != http.StatusCreated {
-			return fmt.Errorf("manager returned status %d", resp.StatusCode)
+			errBody, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return fmt.Errorf("manager returned status %d, couldn't read body: %w", resp.StatusCode, err)
+			}
+			return fmt.Errorf("manager returned status %d: %s", resp.StatusCode, responseBodyMessage(errBody))
 		}
 
 		body, err := io.ReadAll(resp.Body)
@@ -78,7 +78,13 @@ The run command starts a new task.`,
 		}
 
 		fmt.Printf("Successfully created task %q (id %s)\n", created.Name, created.ID)
-		fmt.Printf("Stop it later with: philharmonic stop %s\n", created.Name)
+
+		stopRef := created.Name
+		if stopRef == "" {
+			stopRef = created.ID.String()
+		}
+		fmt.Printf("Stop it later with: philharmonic stop %s\n", stopRef)
+
 		return nil
 	},
 }
@@ -108,8 +114,17 @@ func readFile(filename string) ([]byte, error) {
 	return root.ReadFile(file)
 }
 
-func fileExists(filename string) bool {
-	_, err := os.Stat(filename)
-
-	return !errors.Is(err, fs.ErrNotExist)
+// parses httpresponse for readability
+func responseBodyMessage(body []byte) string {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
+		return ""
+	}
+	var hr handlers.HTTPResponse
+	if err := json.Unmarshal(body, &hr); err == nil {
+		if msg := strings.TrimSpace(hr.Message); msg != "" {
+			return msg
+		}
+	}
+	return trimmed
 }
