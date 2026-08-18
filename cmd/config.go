@@ -115,9 +115,8 @@ func loadConfig(path string) error {
 		return fmt.Errorf("opening config directory %s: %w", dir, err)
 	}
 	defer func() {
-		err := root.Close()
-		if err != nil {
-			fmt.Printf("Error raised closing response body: %v\n", err)
+		if err := root.Close(); err != nil {
+			fmt.Printf("Error closing config root: %v\n", err)
 		}
 	}()
 
