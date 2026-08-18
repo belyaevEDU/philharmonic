@@ -13,7 +13,9 @@ var stopCmd = &cobra.Command{
 	Short: "Stop a running task.",
 	Long: `philharmonic stop command.
 
-The stop command stops a running task.`,
+The stop command stops a running task.
+You may give either the task's UUID or the task's name.`,
+
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		manager, err := cmd.Flags().GetString("manager")
