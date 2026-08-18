@@ -76,12 +76,13 @@ func New(workers []string, schedulerType, dbType string) (*Manager, error) {
 
 	var s scheduler.Scheduler
 	switch schedulerType {
+	case "", scheduler.EpvmDefaultName:
+		s = scheduler.NewEpvm()
 	case scheduler.RoundRobinDefaultName:
 		s = scheduler.NewRoundRobin()
-	case scheduler.EpvmDefaultName:
-		s = scheduler.NewEpvm()
 	default:
-		s = scheduler.NewRoundRobin()
+		return nil, fmt.Errorf("unknown scheduler type %q: want %q or %q",
+			schedulerType, scheduler.EpvmDefaultName, scheduler.RoundRobinDefaultName)
 	}
 
 	m := Manager{
