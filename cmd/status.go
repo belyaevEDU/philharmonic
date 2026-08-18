@@ -30,6 +30,10 @@ The status command allows a user to get the status of tasks from the Philharmoni
 		if err != nil {
 			return err
 		}
+		filter, err := cmd.Flags().GetString("filter")
+		if err != nil {
+			return err
+		}
 
 		url := fmt.Sprintf("http://%s/tasks", manager)
 		resp, err := http.Get(url) // #nosec G107
@@ -80,4 +84,5 @@ The status command allows a user to get the status of tasks from the Philharmoni
 func init() {
 	rootCmd.AddCommand(statusCmd)
 	statusCmd.Flags().StringP("manager", "m", "localhost:5555", "Manager to talk to")
+	statusCmd.Flags().StringP("filter", "f", "", "Filter tasks by state")
 }
