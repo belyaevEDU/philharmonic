@@ -3,6 +3,9 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/belyaevedu/philharmonic/manager"
 	"github.com/spf13/cobra"
@@ -48,14 +51,30 @@ The manager controls the orchestration system. Is responsible for:
 			return err
 		}
 
-		ctx := context.Background()
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+
 		go m.ProcessTasks(ctx)
 		go m.UpdateTasks(ctx)
 		go m.DoHealthChecks(ctx)
 		go m.RefreshNodeStats(ctx)
 
 		api := manager.Api{Address: host, Port: port, Manager: m}
-		return api.Start()
+
+		errCh := make(chan error, 1)
+		go func() { errCh <- api.Start() }()
+
+		select {
+		case err := <-errCh:
+			stop()
+			return err
+		case <-ctx.Done():
+		}
+		stop()
+		runErr := api.Shutdown()
+		if cerr := m.Close(); cerr != nil && runErr == nil {
+			runErr = cerr
+		}
+		return runErr
 	},
 }
 
