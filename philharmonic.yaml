@@ -53,6 +53,9 @@ manager:
   # grace period for in-flight HTTP requests on manager API shutdown (> 0)
   api_shutdown_timeout: "10s"
 
+  # timeout for HTTP requests sent from the manager to workers (> 0)
+  http_client_timeout: "10s"
+
 # Worker node ("philharmonic worker")
 worker:
   # address the worker binds its HTTP API to
@@ -95,6 +98,9 @@ node:
   # timeout for a single /ports query to a worker (> 0)
   ports_query_timeout: "5s"
 
+  # timeout for node HTTP client requests, including each /stats retry (> 0)
+  http_client_timeout: "10s"
+
 # Scheduler ("philharmonic manager"; epvm runtime vars)
 scheduler:
   # assumed maximum concurrent jobs per node, used to normalise the
@@ -125,3 +131,6 @@ task:
 client:
   # "host:port" of the manager the CLI commands talk to
   manager: "localhost:5555"
+
+  # timeout for HTTP requests made by CLI commands (> 0)
+  http_client_timeout: "10s"

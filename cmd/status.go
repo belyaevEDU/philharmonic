@@ -55,7 +55,7 @@ In that mode, the final two columns show the current restart count and latest fa
 		}
 
 		url := fmt.Sprintf("http://%s/tasks", manager)
-		resp, err := http.Get(url) // #nosec G107
+		resp, err := newHTTPClient().Get(url) // #nosec G107
 		if err != nil {
 			return err
 		}

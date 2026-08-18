@@ -34,7 +34,7 @@ The nodes command allows a user to get information about the nodes in the cluste
 		}
 
 		url := fmt.Sprintf("http://%s/nodes", manager)
-		resp, err := http.Get(url) // #nosec G107
+		resp, err := newHTTPClient().Get(url) // #nosec G107
 		if err != nil {
 			return fmt.Errorf("error connecting to manager: %w", err)
 		}

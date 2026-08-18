@@ -32,7 +32,7 @@ You may give either the task's UUID or the task's name.`,
 		// PathEscape keeps a name from breaking or misrouting the request.
 		encoded := url.PathEscape(args[0])
 		requestURL := fmt.Sprintf("http://%s/tasks/%s", manager, encoded)
-		client := &http.Client{}
+		client := newHTTPClient()
 		req, err := http.NewRequest(http.MethodDelete, requestURL, nil)
 		if err != nil {
 			return fmt.Errorf("error creating request %s: %w", requestURL, err)

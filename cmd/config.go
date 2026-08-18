@@ -51,6 +51,7 @@ type ManagerConfig struct {
 	MaxRestarts        *int    `yaml:"max_restarts"`
 	LoopInterval       *string `yaml:"loop_interval"`        // duration
 	ApiShutdownTimeout *string `yaml:"api_shutdown_timeout"` // duration
+	HTTPClientTimeout  *string `yaml:"http_client_timeout"`  // duration
 }
 
 type WorkerConfig struct {
@@ -69,6 +70,7 @@ type NodeConfig struct {
 	StatsQueryMaxRetries  *int    `yaml:"stats_query_max_retries"`
 	StatsQuerySleepPeriod *string `yaml:"stats_query_sleep_period"` // duration
 	PortsQueryTimeout     *string `yaml:"ports_query_timeout"`      // duration
+	HTTPClientTimeout     *string `yaml:"http_client_timeout"`      // duration
 }
 
 type SchedulerConfig struct {
@@ -85,7 +87,8 @@ type TaskConfig struct {
 
 // for cli's 'nodes', 'status', 'run', 'stop'
 type ClientConfig struct {
-	Manager *string `yaml:"manager"`
+	Manager           *string `yaml:"manager"`
+	HTTPClientTimeout *string `yaml:"http_client_timeout"` // duration
 }
 
 var (
@@ -230,7 +233,12 @@ func applyRuntimeConfig(cmd *cobra.Command) error {
 		// the worker builds docker "exec" probes via task.Normalized
 		return applyTaskRuntime(cfg.Task)
 	case "nodes":
-		return applyNodeRuntime(cfg.Node)
+		if err := applyNodeRuntime(cfg.Node); err != nil {
+			return err
+		}
+		return applyClientRuntime(cfg.Client)
+	case "run", "status", "stop":
+		return applyClientRuntime(cfg.Client)
 	default:
 		return nil
 	}
@@ -283,6 +291,13 @@ func applyManagerRuntime(m *ManagerConfig) error {
 			return err
 		}
 		manager.ApiShutdownTimeout = d
+	}
+	if v := m.HTTPClientTimeout; v != nil {
+		d, err := parsePosDuration("manager.http_client_timeout", *v)
+		if err != nil {
+			return err
+		}
+		manager.HTTPClientTimeout = d
 	}
 	return nil
 }
@@ -344,6 +359,25 @@ func applyNodeRuntime(n *NodeConfig) error {
 		}
 		node.PortsQueryTimeout = d
 	}
+	if v := n.HTTPClientTimeout; v != nil {
+		d, err := parsePosDuration("node.http_client_timeout", *v)
+		if err != nil {
+			return err
+		}
+		node.HTTPClientTimeout = d
+	}
+	return nil
+}
+
+func applyClientRuntime(c *ClientConfig) error {
+	if c == nil || c.HTTPClientTimeout == nil {
+		return nil
+	}
+	d, err := parsePosDuration("client.http_client_timeout", *c.HTTPClientTimeout)
+	if err != nil {
+		return err
+	}
+	HTTPClientTimeout = d
 	return nil
 }
 
