@@ -2,14 +2,17 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 
+	"github.com/belyaevedu/philharmonic/task"
 	"github.com/spf13/cobra"
 )
 
@@ -63,7 +66,18 @@ The run command starts a new task.`,
 			return fmt.Errorf("manager returned status %d", resp.StatusCode)
 		}
 
-		log.Println("Successfully sent task request to manager")
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("reading manager response: %w", err)
+		}
+
+		var created task.Task
+		if err := json.Unmarshal(body, &created); err != nil {
+			return fmt.Errorf("decoding manager response: %w", err)
+		}
+
+		log.Printf("Successfully created task %q (id %s)", created.Name, created.ID)
+		log.Printf("Stop it later with: philharmonic stop %s", created.Name)
 		return nil
 	},
 }
