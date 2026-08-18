@@ -19,8 +19,8 @@ const (
 	nodeNotAvailable = "Not avail."
 )
 
-var nodeCmd = &cobra.Command{
-	Use:   "node",
+var nodesCmd = &cobra.Command{
+	Use:   "nodes",
 	Short: "Node command to list nodes.",
 	Long: `philharmonic node command
 
@@ -95,6 +95,6 @@ The node command allows a user to get the information about the nodes in the clu
 }
 
 func init() {
-	rootCmd.AddCommand(nodeCmd)
-	nodeCmd.Flags().StringP("manager", "m", "localhost:5555", "Manager to talk to")
+	rootCmd.AddCommand(nodesCmd)
+	nodesCmd.Flags().StringP("manager", "m", "localhost:5555", "Manager to talk to")
 }
