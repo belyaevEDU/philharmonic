@@ -52,6 +52,7 @@ The manager controls the orchestration system. Is responsible for:
 		go m.ProcessTasks(ctx)
 		go m.UpdateTasks(ctx)
 		go m.DoHealthChecks(ctx)
+		go m.RefreshNodeStats(ctx)
 
 		api := manager.Api{Address: host, Port: port, Manager: m}
 		return api.Start()
