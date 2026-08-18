@@ -21,7 +21,7 @@ var runCmd = &cobra.Command{
 	Long: `philharmonic run command.
 
 The run command starts a new task.`,
-	SilenceUsage: true,
+
 	RunE: func(cmd *cobra.Command, args []string) error {
 		manager, err := cmd.Flags().GetString("manager")
 		if err != nil {
@@ -44,7 +44,7 @@ The run command starts a new task.`,
 		fmt.Printf("Using manager: %v\n", manager)
 		fmt.Printf("Using file: %v\n", fullFilePath)
 
-		data, err := openFileInCurrentDirectory(filename)
+		data, err := readFile(filename)
 		if err != nil {
 			return fmt.Errorf("unable to read file %s: %w", filename, err)
 		}
@@ -84,26 +84,26 @@ The run command starts a new task.`,
 func init() {
 	rootCmd.AddCommand(runCmd)
 	runCmd.Flags().StringP("manager", "m", "localhost:5555", "Manager to talk to")
-	runCmd.Flags().StringP("filename", "f", "task.json", "Task specification file (must be in current directory)")
+	runCmd.Flags().StringP("filename", "f", "task.json", "Task specification file (relative or absolute path)")
 }
 
-func openFileInCurrentDirectory(filename string) ([]byte, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return nil, err
+func readFile(filename string) ([]byte, error) {
+	dir, file := filepath.Split(filename)
+	if dir == "" {
+		dir = "."
 	}
 
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if err := root.Close(); err != nil {
+			fmt.Printf("Error closing root: %v\n", err)
+		}
+	}()
 
-	data, err := root.ReadFile(filename)
-	if err != nil {
-		return nil, err
-	}
-
-	return data, nil
+	return root.ReadFile(file)
 }
 
 func fileExists(filename string) bool {
