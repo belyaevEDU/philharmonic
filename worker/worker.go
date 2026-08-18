@@ -394,8 +394,6 @@ func (w *Worker) RunTasks(ctx context.Context) {
 			if result.Error != nil {
 				log.Printf("Error running task: %v\n", result.Error)
 			}
-		} else {
-			log.Println("No tasks to process currently.")
 		}
 		select {
 		case <-ctx.Done():
@@ -409,7 +407,6 @@ func (w *Worker) CollectStats(ctx context.Context) {
 	ticker := time.NewTicker(LoopInterval)
 	defer ticker.Stop()
 	for {
-		log.Println("Collecting stats...")
 		fresh := stats.GetStats()
 
 		// CPU usage is measured as the work done between this sample and the
@@ -581,10 +578,9 @@ func (w *Worker) UpdateTasks(ctx context.Context) {
 	ticker := time.NewTicker(LoopInterval)
 	defer ticker.Stop()
 	for {
-		log.Println("Checking status of tasks")
+		log.Println("Checking status of tasks...")
 		w.updateTasks()
 		log.Println("Task updates completed")
-		log.Println("Sleeping for 10 seconds...")
 		select {
 		case <-ctx.Done():
 			return
