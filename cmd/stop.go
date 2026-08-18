@@ -26,16 +26,21 @@ You may give either the task's UUID or the task's name.`,
 		client := &http.Client{}
 		req, err := http.NewRequest("DELETE", url, nil)
 		if err != nil {
-			return fmt.Errorf("error creating requets %s: %w", url, err)
+			return fmt.Errorf("error creating request %s: %w", url, err)
 		}
 
 		resp, err := client.Do(req)
 		if err != nil {
 			return fmt.Errorf("error connecting to %s: %w", url, err)
 		}
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				fmt.Printf("Error raised closing response body: %v\n", err)
+			}
+		}()
 
 		if resp.StatusCode != http.StatusNoContent {
-			return fmt.Errorf("error sending request: %w", err)
+			return fmt.Errorf("error sending request: unexpected status %d from %s", resp.StatusCode, url)
 		}
 
 		fmt.Printf("Sent request to stop task %v.\n", args[0])
@@ -45,5 +50,5 @@ You may give either the task's UUID or the task's name.`,
 
 func init() {
 	rootCmd.AddCommand(stopCmd)
-	stopCmd.Flags().StringP("manager", "m", "localhost:5555", "Manager to taslk to")
+	stopCmd.Flags().StringP("manager", "m", "localhost:5555", "Manager to talk to")
 }
