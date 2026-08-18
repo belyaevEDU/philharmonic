@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -42,9 +41,9 @@ The worker runs tasks via Docker and responds to manager's requests about task s
 			return err
 		}
 
-		log.Println("Starting worker...")
+		fmt.Println("Starting worker...")
 
-		log.Printf("Worker name: %s\n", name)
+		fmt.Printf("Worker name: %s\n", name)
 		w, err := worker.New(name, dbType)
 		if err != nil {
 			return err
