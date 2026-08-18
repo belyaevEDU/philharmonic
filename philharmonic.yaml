@@ -1,0 +1,125 @@
+# Philharmonic configuration file.
+#
+# This file is optional. By default the CLI looks for it at
+# philharmonic.yaml in the same directory as the philharmonic binary itself.
+
+# Override the location with --config/-c.
+
+# If it is missing, the hardcoded defaults are used.
+# Any value present here overrides the hardcoded default,
+# but a value passed explicitly on the command line wins over this file.
+
+# Precedence:  CLI flag  >  config file  >  hardcoded default
+
+# Every field is optional: omit a key to keep the built-in default for it.
+
+# Durations are written as Go duration strings, e.g. "10s", "500ms", "2m".
+# Counts are plain integers.
+
+# Manager node ("philharmonic manager")
+manager:
+  # address the manager binds its HTTP API to
+  host: "0.0.0.0"
+
+  # port the manager listens on
+  port: 5555
+
+  # list of "host:port" addresses of workers the manager schedules onto
+  workers:
+    - "localhost:5556"
+
+  # scheduler implementation: "epvm" or "roundrobin"
+  scheduler: "epvm"
+
+  # task/event storage backend: "memory" or "bolt"
+  dbtype: "memory"
+
+  ## runtime tunables (only used by "philharmonic manager")
+
+  # bbolt file paths for the tasks and events stores (dbtype: bolt)
+  db_tasks_file: "tasks.db"
+  db_events_file: "events.db"
+
+  # bbolt bucket names for the tasks and events stores
+  db_task_bucket: "tasks"
+  db_event_bucket: "events"
+
+  # maximum restart attempts before a failing task is marked failed (>= 0)
+  max_restarts: 3
+
+  # interval between UpdateTasks / DoHealthChecks / ProcessTasks loops (> 0)
+  loop_interval: "10s"
+
+  # grace period for in-flight HTTP requests on manager API shutdown (> 0)
+  api_shutdown_timeout: "10s"
+
+# Worker node ("philharmonic worker")
+worker:
+  # address the worker binds its HTTP API to
+  host: "0.0.0.0"
+
+  # Port the worker listens on
+  port: 5556
+
+  # Name of the worker. Leave empty to auto-generate "worker-<uuid>"
+  name: ""
+
+  # Task storage backend: "memory" or "bolt"
+  dbtype: "memory"
+
+  ## runtime tunables (only used by "philharmonic worker")
+
+  # bbolt file name format for the task store
+  # must contain exactly one %s, which is substituted with the worker name
+  db_filename: "%s_tasks.db"
+
+  # bbolt bucket name for the worker task store
+  db_bucket_name: "tasks"
+
+  # interval between RunTasks / CollectStats / UpdateTasks loops (> 0)
+  loop_interval: "10s"
+
+  # grace period for in-flight HTTP requests on worker API shutdown (> 0)
+  api_shutdown_timeout: "10s"
+
+# Node polling ("philharmonic manager" side, the node package runtime vars)
+node:
+  # maximum attempts when querying a worker's /stats (> 0)
+  stats_query_max_retries: 3
+
+  # sleep between /stats retry attempts (> 0)
+  stats_query_sleep_period: "3s"
+
+  # timeout for a single /ports query to a worker (> 0)
+  ports_query_timeout: "5s"
+
+# Scheduler ("philharmonic manager"; epvm runtime vars)
+scheduler:
+  # assumed maximum concurrent jobs per node, used to normalise the
+  # job-count term in the epvm cost function (> 0)
+  epvm_max_jobs: 12
+
+  # CPU-utilisation cap above which a node is considered saturated
+  # must be in (0, 1]
+  epvm_max_safe_cpu_util: 0.9
+
+# Task health checks (defaults applied by HealthCheck.Normalized when a
+# task leaves a field zero). Used by the manager (http/tcp probes) and by
+# the worker (docker exec probes). Units: seconds, except retries (count)
+task:
+  # seconds between health probes (> 0)
+  health_check_default_interval: 30
+
+  # seconds allowed for a single probe to complete (> 0)
+  health_check_default_timeout: 5
+
+  # consecutive failures before a task is considered unhealthy (> 0)
+  health_check_default_retries: 3
+
+  # initial grace period in seconds during which failures are not counted (>= 0)
+  health_check_default_start_period: 0
+
+# Client commands ("philharmonic node|run|status|stop")
+client:
+  # "host:port" of the manager the CLI commands talk to
+  manager: "localhost:5555"
