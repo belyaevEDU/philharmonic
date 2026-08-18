@@ -316,9 +316,12 @@ func (m *Manager) getTaskByName(name string) (task.Task, bool, bool) {
 	return match, count == 1, count > 1
 }
 
-// deleteTask removes a Completed or restart-exhausted Failed task record from
-// the store and cleans up its ownership and port-reservation entries
+// deleteTask removes a task record from the store and cleans up its pending,
+// ownership, and port-reservation entries. Pending tasks have no container to
+// stop yet, so deleting their queued events is the cancellation operation.
 func (m *Manager) deleteTask(t task.Task) error {
+	m.removePendingTask(t.ID)
+
 	owner := m.taskWorker(t.ID)
 	if t.State == task.Failed && t.ContainerID != "" && owner != "" {
 		m.bestEffortStopOldContainer(owner, t)
@@ -366,6 +369,26 @@ func (m *Manager) enqueuePending(te task.TaskEvent) {
 	m.pendingMu.Lock()
 	m.Pending.Enqueue(te)
 	m.pendingMu.Unlock()
+}
+
+// removePendingTask drops every queued event for id. A stop request for a
+// Pending task must cancel its original start event as well; otherwise that
+// event could still be delivered after the task has been deleted.
+func (m *Manager) removePendingTask(id uuid.UUID) {
+	m.pendingMu.Lock()
+	defer m.pendingMu.Unlock()
+
+	items := make([]any, 0, m.Pending.Len())
+	for m.Pending.Len() > 0 {
+		item := m.Pending.Dequeue()
+		if te, ok := item.(task.TaskEvent); ok && te.Task.ID == id {
+			continue
+		}
+		items = append(items, item)
+	}
+	for _, item := range items {
+		m.Pending.Enqueue(item)
+	}
 }
 
 // all snapshots now to not worry about race conditions
@@ -500,6 +523,17 @@ func (m *Manager) SendWork() {
 				}
 			}
 		} else if isStop {
+			// A stop can overtake a failed/requeued start while the task is
+			// still Pending. There is no worker to contact in that case; cancel
+			// the queued start and remove the task instead of dropping the stop.
+			if pending, exists := m.getTask(t.ID); exists && pending.State == task.Pending {
+				if err := m.deleteTask(pending); err != nil {
+					log.Printf("Error deleting pending task %s: %v\n", t.ID, err)
+				} else {
+					log.Printf("Cancelled pending task %s\n", t.ID)
+				}
+				return
+			}
 			log.Printf("Cannot stop task %s: no worker owns it\n", t.ID)
 			return
 		} else {
