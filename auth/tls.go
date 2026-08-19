@@ -78,7 +78,7 @@ func ClientTLSConfig(caFile, certFile, keyFile string) (*tls.Config, error) {
 
 // reads PEM-encoded certificates into a verification pool
 func LoadCAPool(path string) (*x509.CertPool, error) {
-	pem, err := os.ReadFile(path)
+	pem, err := os.ReadFile(path) // #nosec G304, intended behaviour
 	if err != nil {
 		return nil, err
 	}

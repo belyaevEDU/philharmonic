@@ -53,7 +53,7 @@ type TokenStore struct {
 }
 
 func LoadTokenFile(path string) (*TokenStore, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304, intended behaviour
 	if err != nil {
 		return nil, fmt.Errorf("reading token file %s: %w", path, err)
 	}
