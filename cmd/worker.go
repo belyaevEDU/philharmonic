@@ -53,6 +53,17 @@ by default), so the name and the DB file are coupled.`,
 		fmt.Println("Starting worker...")
 
 		fmt.Printf("Worker name: %s\n", name)
+
+		serverTLS, err := workerServerTLS()
+		if err != nil {
+			return err
+		}
+		if serverTLS != nil && serverTLS.ClientCAs == nil {
+			fmt.Println("Notice: worker TLS is enabled without client_ca_file; " +
+				"any client will be accepted. Set worker.tls.client_ca_file to require " +
+				"manager certificates (mTLS).")
+		}
+
 		w, err := worker.New(name, dbType)
 		if err != nil {
 			return err
@@ -64,7 +75,7 @@ by default), so the name and the DB file are coupled.`,
 		go w.CollectStats(ctx)
 		go w.UpdateTasks(ctx)
 
-		api := worker.Api{Address: host, Port: port, Worker: w}
+		api := worker.Api{Address: host, Port: port, Worker: w, TLSConfig: serverTLS}
 
 		errCh := make(chan error, 1)
 		go func() { errCh <- api.Start() }()

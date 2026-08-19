@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/belyaevedu/philharmonic/auth"
 	"github.com/belyaevedu/philharmonic/httpclient"
 	"github.com/belyaevedu/philharmonic/manager"
 	"github.com/belyaevedu/philharmonic/node"
@@ -43,12 +45,41 @@ type HTTPConfig struct {
 	ClientTimeout *string `yaml:"client_timeout"` // duration
 }
 
+// the shared shape of the per-role "tls" config sections
+// which fields are meaningful depends on the role:
+//
+//	manager: cert/key = manager API server identity (also presented to
+//	         workers when talking to them); ca_file = trust root for worker
+//	         certificates; client_ca_file = require client certs (mTLS) on
+//	         the manager API
+//	worker:  cert/key = worker API server identity; client_ca_file =
+//	         require client certs (mTLS), i.e. only certificate holders
+//	         (normally the manager) may reach the worker API
+//	client:  ca_file = trust root for the manager's (and workers')
+//	         certificates; cert/key = client certificate presented
+//	         to mTLS-protected servers
+type TLSFileConfig struct {
+	CertFile     *string `yaml:"cert_file"`
+	KeyFile      *string `yaml:"key_file"`
+	CAFile       *string `yaml:"ca_file"`
+	ClientCAFile *string `yaml:"client_ca_file"`
+}
+
+// configures user authentication on the manager API
+type ManagerAuthConfig struct {
+	// TokenFile is a YAML file of bearer token records (user, role,
+	// token_hash). Empty/nil disables authentication.
+	TokenFile *string `yaml:"token_file"`
+}
+
 type ManagerConfig struct {
-	Host      *string  `yaml:"host"`
-	Port      *int     `yaml:"port"`
-	Workers   []string `yaml:"workers"`
-	Scheduler *string  `yaml:"scheduler"`
-	DBType    *string  `yaml:"dbtype"`
+	Host      *string            `yaml:"host"`
+	Port      *int               `yaml:"port"`
+	Workers   []string           `yaml:"workers"`
+	Scheduler *string            `yaml:"scheduler"`
+	DBType    *string            `yaml:"dbtype"`
+	TLS       *TLSFileConfig     `yaml:"tls"`
+	Auth      *ManagerAuthConfig `yaml:"auth"`
 
 	DbTasksFile        *string `yaml:"db_tasks_file"`
 	DbEventsFile       *string `yaml:"db_events_file"`
@@ -60,10 +91,11 @@ type ManagerConfig struct {
 }
 
 type WorkerConfig struct {
-	Host   *string `yaml:"host"`
-	Port   *int    `yaml:"port"`
-	Name   *string `yaml:"name"`
-	DBType *string `yaml:"dbtype"`
+	Host   *string        `yaml:"host"`
+	Port   *int           `yaml:"port"`
+	Name   *string        `yaml:"name"`
+	DBType *string        `yaml:"dbtype"`
+	TLS    *TLSFileConfig `yaml:"tls"`
 
 	DbFilename         *string `yaml:"db_filename"`
 	DbBucketName       *string `yaml:"db_bucket_name"`
@@ -91,12 +123,22 @@ type TaskConfig struct {
 
 // for cli's 'nodes', 'status', 'run', 'stop'
 type ClientConfig struct {
-	Manager *string `yaml:"manager"`
+	Manager   *string        `yaml:"manager"`
+	TLS       *TLSFileConfig `yaml:"tls"`
+	Token     *string        `yaml:"token"`
+	TokenFile *string        `yaml:"token_file"`
 }
 
 var (
 	cfg        Config
 	configPath string
+
+	// configDir is the directory of the config file that was loaded (or, for a
+	// missing file, where it would have been). Relative file paths in the
+	// config (TLS certificates, token files) are resolved against it, so
+	// "certs/manager.crt" in philharmonic.yaml means next to the config file
+	// itself, regardless of the working directory the binary was started from.
+	configDir string
 )
 
 func defaultConfigPath() string {
@@ -115,6 +157,7 @@ func loadConfig(path string) error {
 		return fmt.Errorf("resolving config path %s: %w", path, err)
 	}
 	dir, file := filepath.Split(abs)
+	configDir = dir
 
 	root, err := os.OpenRoot(dir)
 	if err != nil {
@@ -240,9 +283,12 @@ func applyRuntimeConfig(cmd *cobra.Command) error {
 		// the worker builds docker "exec" probes via task.Normalized
 		return applyTaskRuntime(cfg.Task)
 	case "nodes":
-		return applyNodeRuntime(cfg.Node)
+		if err := applyNodeRuntime(cfg.Node); err != nil {
+			return err
+		}
+		return applyClientRuntime(cfg.Client)
 	case "run", "status", "stop":
-		return nil
+		return applyClientRuntime(cfg.Client)
 	default:
 		return nil
 	}
@@ -421,7 +467,171 @@ func applyTaskRuntime(t *TaskConfig) error {
 	return nil
 }
 
+// builds the manager API server TLS config
+// nil means plain HTTP
+func managerServerTLS() (*tls.Config, error) {
+	if cfg.Manager == nil || cfg.Manager.TLS == nil {
+		return nil, nil
+	}
+	t := cfg.Manager.TLS
+	c, err := auth.ServerTLSConfig(
+		resolvePath(strVal(t.CertFile)),
+		resolvePath(strVal(t.KeyFile)),
+		resolvePath(strVal(t.ClientCAFile)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("manager.tls: %w", err)
+	}
+	return c, nil
+}
+
+// builds the TLS config the manager uses as an HTTP client towards workers.
+// the manager's own certificate pair is reused as the client certificate
+// (a Philharmonic node certificate carries both serverAuth and clientAuth EKUs)
+// nil means plain HTTP
+func managerWorkerClientTLS() (*tls.Config, error) {
+	if cfg.Manager == nil || cfg.Manager.TLS == nil {
+		return nil, nil
+	}
+	t := cfg.Manager.TLS
+	c, err := auth.ClientTLSConfig(
+		resolvePath(strVal(t.CAFile)),
+		resolvePath(strVal(t.CertFile)),
+		resolvePath(strVal(t.KeyFile)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("manager.tls: %w", err)
+	}
+	return c, nil
+}
+
+// builds the worker API server TLS config
+// nil means plain HTTP
+func workerServerTLS() (*tls.Config, error) {
+	if cfg.Worker == nil || cfg.Worker.TLS == nil {
+		return nil, nil
+	}
+	t := cfg.Worker.TLS
+	c, err := auth.ServerTLSConfig(
+		resolvePath(strVal(t.CertFile)),
+		resolvePath(strVal(t.KeyFile)),
+		resolvePath(strVal(t.ClientCAFile)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("worker.tls: %w", err)
+	}
+	return c, nil
+}
+
+// loads the bearer-token store for the manager API
+// nil means authentication is disabled
+func managerTokenStore() (*auth.TokenStore, error) {
+	if cfg.Manager == nil || cfg.Manager.Auth == nil {
+		return nil, nil
+	}
+	path := resolvePath(strVal(cfg.Manager.Auth.TokenFile))
+	if path == "" {
+		return nil, nil
+	}
+	store, err := auth.LoadTokenFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("manager.auth.token_file: %w", err)
+	}
+	return store, nil
+}
+
+// dereferences an optional config string ("" when absent)
+func strVal(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+// resolvePath anchors a possibly-relative file path from the config
+// to the config file's own directory (configDir)
+// absolute paths and empty strings pass through unchanged
+func resolvePath(p string) string {
+	if p == "" || filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(configDir, p)
+}
+
+// the environment variable the client commands read the manager API bearer token from.
+// overrides client.token/token_file from the config file if present
+const TokenEnvVar = "PHILHARMONIC_TOKEN"
+
+// clientToken resolves the CLI bearer token:
+// env PHILHARMONIC_TOKEN > client.token > client.token_file contents
+func clientToken(c *ClientConfig) (string, error) {
+	if token := os.Getenv(TokenEnvVar); token != "" {
+		return token, nil
+	}
+	if c == nil {
+		return "", nil
+	}
+	if token := strVal(c.Token); token != "" {
+		if err := validateClientToken(token); err != nil {
+			return "", err
+		}
+		return token, nil
+	}
+	if path := resolvePath(strVal(c.TokenFile)); path != "" { // #nosec G304, intended behaviour
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("client.token_file: %w", err)
+		}
+		token := strings.TrimSpace(string(data))
+		if token == "" {
+			return "", fmt.Errorf("client.token_file: %s is empty", path)
+		}
+		if err := validateClientToken(token); err != nil {
+			return "", fmt.Errorf("client.token_file: %w", err)
+		}
+		return token, nil
+	}
+	return "", nil
+}
+
+func applyClientRuntime(c *ClientConfig) error {
+	token, err := clientToken(c)
+	if err != nil {
+		return err
+	}
+
+	var tlsCfg *tls.Config
+	if c != nil && c.TLS != nil {
+		tlsCfg, err = auth.ClientTLSConfig(
+			resolvePath(strVal(c.TLS.CAFile)),
+			resolvePath(strVal(c.TLS.CertFile)),
+			resolvePath(strVal(c.TLS.KeyFile)),
+		)
+		if err != nil {
+			return fmt.Errorf("client.tls: %w", err)
+		}
+	}
+
+	httpclient.ConfigureManagerClient(httpclient.Options{TLSConfig: tlsCfg, BearerToken: token})
+	httpclient.ConfigureWorkerClient(httpclient.Options{TLSConfig: tlsCfg})
+
+	if token != "" && tlsCfg == nil {
+		fmt.Printf("Warning: bearer token will be sent over plain HTTP (no client.tls configured)\n")
+	}
+	return nil
+}
+
 // validators
+
+func validateClientToken(token string) error {
+	if strings.HasPrefix(token, "sha256:") {
+		return fmt.Errorf("configured token is a token_hash, not a token; put the raw token printed by \"philharmonic token\" (starts with \"ph_\") in client.token/token_file")
+	}
+	if strings.Contains(token, "- user:") {
+		return fmt.Errorf("configured token looks like the YAML entry from the manager's token file; put only the raw token printed by \"philharmonic token\" (starts with \"ph_\") in client.token/token_file")
+	}
+	return nil
+}
 
 func cfgErr(field, msg string) error {
 	return fmt.Errorf("config %s: %s", field, msg)

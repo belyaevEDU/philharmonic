@@ -48,8 +48,8 @@ The run command starts a new task.`,
 		fmt.Printf("Using manager: %v\n", manager)
 		fmt.Printf("Using file: %v\n", fullFilePath)
 
-		url := fmt.Sprintf("http://%s/tasks", manager)
-		resp, err := httpclient.New().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
+		url := httpclient.ManagerURL(manager, "/tasks")
+		resp, err := httpclient.Manager().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 		if err != nil {
 			return err
 		}

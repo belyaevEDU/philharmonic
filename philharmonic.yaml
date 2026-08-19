@@ -11,6 +11,12 @@
 
 # Precedence:  CLI flag  >  config file  >  hardcoded default
 
+# Relative file paths in this file (TLS certificates, token files) are
+# resolved against the directory of this config file itself, not the
+# current working directory. So "cert_file: certs/manager.crt" always means
+# "<this file's directory>/certs/manager.crt", no matter where the
+# philharmonic binary is started from. Absolute paths are used as-is.
+
 # Every field is optional: omit a key to keep the built-in default for it.
 
 # Durations are written as Go duration strings, e.g. "10s", "500ms", "2m".
@@ -33,6 +39,38 @@ manager:
 
   # task/event storage backend: "memory" or "bolt"
   dbtype: "memory"
+
+  ## TLS and auth (manager)
+  #
+  # All keys optional; when tls is absent or cert/key are empty the manager
+  # API serves plain HTTP and talks to workers over plain HTTP.
+  #
+  # cert/key double as the manager's identity in both directions: they are
+  # the manager API's server certificate and the client certificate
+  # presented to workers (node certs carry serverAuth + clientAuth EKUs).
+
+  # PEM certificate / private key for the manager API
+  # (cert_file and key_file must be set together)
+  tls:
+    cert_file: "./certs/manager.crt"
+    key_file: "./certs/manager.key"
+
+    # CA bundle the manager trusts when verifying worker certificates
+    # (manager -> worker traffic)
+    ca_file: "./certs/ca.crt"
+
+    # if set, the manager API requires callers to present a certificate
+    # signed by this CA (mTLS). Without it the manager API accepts any
+    # client; combine with auth.token_file for bearer-token auth.
+    client_ca_file: "./certs/ca.crt"
+
+  # bearer-token user authentication for the manager API.
+  # The file is a YAML list of {user, role, token_hash} entries; generate
+  # entries with "philharmonic token". Roles: "admin" (full access),
+  # "viewer" (read-only: status/nodes).
+  # Empty or absent = auth disabled (anyone can call the manager API).
+  auth:
+    token_file: "./certs/token.yaml"
 
   ## runtime tunables (only used by "philharmonic manager")
 
@@ -68,6 +106,29 @@ worker:
 
   # Task storage backend: "memory" or "bolt"
   dbtype: "memory"
+
+  ## TLS (worker)
+  #
+  # Optional. cert/key are the worker API's server certificate; when
+  # client_ca_file is set the worker API requires client certificates
+  # (mTLS): only cluster certificate holders - normally the manager - can
+  # start, stop or inspect tasks on this worker.
+
+  tls:
+    # PEM certificate / private key for the worker API
+    # (cert_file and key_file must be set together)
+    cert_file: "./certs/worker.crt"
+    key_file: "./certs/worker.key"
+
+    # if set, the worker API requires callers (normally the manager) to
+    # present a certificate signed by this CA (mTLS): only certificate
+    # holders can start, stop or inspect tasks on this worker. Without it
+    # the worker API accepts any client.
+    #
+    # The worker never acts as an HTTP client towards other Philharmonic
+    # nodes, so it has no ca_file: it verifies nothing about the servers
+    # it connects to (there are none).
+    client_ca_file: "./certs/ca.crt"
 
   ## runtime tunables (only used by "philharmonic worker")
 
@@ -130,3 +191,22 @@ task:
 client:
   # "host:port" of the manager the CLI commands talk to
   manager: "localhost:5555"
+
+  # bearer token for the manager API (generate with "philharmonic token").
+  # Precedence: PHILHARMONIC_TOKEN env var > token > token_file.
+  # Only send over TLS; the CLI warns when a token would travel plain HTTP.
+  # Prefer token_file over an inline token so the secret stays out of this
+  # (potentially committed) file.
+  token: ""
+
+  # alternatively, read the token from this file (single line)
+  token_file: "./certs/token.secret"
+
+  # TLS for the CLI: ca_file verifies the manager's (and workers')
+  # certificates; cert/key are presented to mTLS-protected servers - needed
+  # for the live per-node stats of "philharmonic nodes" when workers
+  # require mTLS.
+  tls:
+    ca_file: "./certs/ca.crt"
+    cert_file: "./certs/client.crt"
+    key_file: "./certs/client.key"

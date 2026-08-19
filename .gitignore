@@ -3,4 +3,7 @@ task.json
 task-send.sh
 philharmonic
 
-*test.go
+*test*
+certs/
+# for now
+security.md

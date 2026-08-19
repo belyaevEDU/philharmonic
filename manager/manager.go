@@ -28,8 +28,7 @@ import (
 )
 
 const (
-	WorkerTasksURL = "http://%s/tasks"
-	WorkerRole     = "worker"
+	WorkerRole = "worker"
 
 	DbFilemode = os.FileMode(0600)
 )
@@ -578,9 +577,9 @@ func (m *Manager) SendWork() {
 			return
 		}
 
-		url := fmt.Sprintf(WorkerTasksURL, w.Address)
+		url := httpclient.WorkerURL(w.Address, "/tasks")
 		// ignoring gosec's G107 since the url is not from external input, but from an internal config
-		resp, err := httpclient.New().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
+		resp, err := httpclient.Worker().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 		if err != nil {
 			if reserved {
 				m.releasePorts(w.Address, &t)
@@ -673,9 +672,9 @@ func (m *Manager) SendWork() {
 }
 
 func (m *Manager) fetchTasksFromWorker(worker string) ([]*task.Task, error) {
-	url := fmt.Sprintf(WorkerTasksURL, worker)
+	url := httpclient.WorkerURL(worker, "/tasks")
 	// ignoring gosec's G107 since the url is not from external input, but from an internal config
-	resp, err := httpclient.New().Get(url) // #nosec G107
+	resp, err := httpclient.Worker().Get(url) // #nosec G107
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to worker: %w", err)
 	}
@@ -849,9 +848,9 @@ func (m *Manager) restartTask(t task.Task) error {
 		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
 	}
 
-	url := fmt.Sprintf(WorkerTasksURL, w.Address)
+	url := httpclient.WorkerURL(w.Address, "/tasks")
 	// ignoring gosec's G107 since the url is not from external input, but from an internal config
-	resp, err := httpclient.New().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
+	resp, err := httpclient.Worker().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
 		m.releasePorts(w.Address, &next)
 		// the worker never saw the restart, so don't burn a restart slot
@@ -979,8 +978,8 @@ func (m *Manager) bestEffortStopOldContainer(addr string, t task.Task) {
 		log.Printf("Error marshalling cleanup stop for task %s: %v", t.ID, err)
 		return
 	}
-	url := fmt.Sprintf(WorkerTasksURL, addr)
-	resp, err := httpclient.New().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
+	url := httpclient.WorkerURL(addr, "/tasks")
+	resp, err := httpclient.Worker().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
 		log.Printf("Could not reach old owner %s to stop orphaned container %s: %v", addr, t.ContainerID, err)
 		return
@@ -1029,8 +1028,8 @@ func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
 		return
 	}
 
-	url := fmt.Sprintf(WorkerTasksURL, w)
-	resp, err := httpclient.New().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
+	url := httpclient.WorkerURL(w, "/tasks")
+	resp, err := httpclient.Worker().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
 		log.Printf("Error connecting to %v: %v", w, err)
 		return
@@ -1071,7 +1070,7 @@ func (m *Manager) checkTaskHealth(ctx context.Context, t task.Task, w string) er
 		if err != nil {
 			return fmt.Errorf("error building request: %w", err)
 		}
-		resp, err := httpclient.New().Do(req)
+		resp, err := httpclient.Plain().Do(req)
 		if err != nil {
 			return fmt.Errorf("error performing health check %s: %w", url, err)
 		}
