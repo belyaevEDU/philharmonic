@@ -55,8 +55,8 @@ In that mode, the final two columns show the current restart count and latest fa
 			}
 		}
 
-		url := fmt.Sprintf("http://%s/tasks", manager)
-		resp, err := httpclient.New().Get(url) // #nosec G107
+		url := httpclient.ManagerURL(manager, "/tasks")
+		resp, err := httpclient.Manager().Get(url) // #nosec G107
 		if err != nil {
 			return err
 		}
@@ -68,7 +68,11 @@ In that mode, the final two columns show the current restart count and latest fa
 		}()
 
 		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("manager returned status %d", resp.StatusCode)
+			errBody, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return fmt.Errorf("manager returned status %d, couldn't read the response body: %w", resp.StatusCode, err)
+			}
+			return fmt.Errorf("manager returned status %d: %s", resp.StatusCode, responseBodyMessage(errBody))
 		}
 
 		body, err := io.ReadAll(resp.Body)
