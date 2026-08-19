@@ -75,8 +75,8 @@ func validateAddress(address string) error {
 }
 
 func (n *Node) GetStats() (*stats.Stats, error) {
-	url := fmt.Sprintf("http://%s/stats", n.Address)
-	resp, err := utils.HTTPWithRetry(httpclient.New().Get, url, StatsQueryMaxRetries, StatsQuerySleepPeriod) // #nosec G107
+	url := httpclient.WorkerURL(n.Address, "/stats")
+	resp, err := utils.HTTPWithRetry(httpclient.Worker().Get, url, StatsQueryMaxRetries, StatsQuerySleepPeriod) // #nosec G107
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to %v: %w", n.Address, err)
 	}
@@ -113,14 +113,14 @@ func (n *Node) GetStats() (*stats.Stats, error) {
 }
 
 func (n *Node) GetPorts() (*worker.OccupiedPorts, error) {
-	url := fmt.Sprintf("http://%s/ports", n.Address)
+	url := httpclient.WorkerURL(n.Address, "/ports")
 	ctx, cancel := context.WithTimeout(context.Background(), PortsQueryTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("error building ports request for %v: %w", n.Address, err)
 	}
-	resp, err := httpclient.New().Do(req) // #nosec G107
+	resp, err := httpclient.Worker().Do(req) // #nosec G107
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to %v: %w", n.Address, err)
 	}
