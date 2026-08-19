@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -23,6 +24,12 @@ type Api struct {
 	Port    int
 	Worker  *Worker
 	Router  *chi.Mux
+
+	// TLSConfig enables HTTPS when non-nil
+	// a non-nil config with client ClientCAs set additionally requires the
+	// manager to authenticate with a cluster certificate via mTLS,
+	// so only certificate holders may start, stop or inspect tasks on this worker
+	TLSConfig *tls.Config
 
 	server *http.Server
 }
@@ -55,7 +62,13 @@ func (a *Api) Start() error {
 		ReadHeaderTimeout: apiReadHeaderTimeout,
 	}
 
-	err := a.server.ListenAndServe()
+	var err error
+	if a.TLSConfig != nil {
+		a.server.TLSConfig = a.TLSConfig
+		err = a.server.ListenAndServeTLS("", "")
+	} else {
+		err = a.server.ListenAndServe()
+	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("error raised when starting an http server: %w", err)
 	}
