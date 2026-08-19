@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/belyaevedu/philharmonic/auth"
 	"github.com/belyaevedu/philharmonic/node"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/go-chi/chi/v5"
@@ -25,6 +27,15 @@ type Api struct {
 	Port    int
 	Manager *Manager
 	Router  *chi.Mux
+
+	// enables HTTPS when non-nil
+	// a non-nil config with ClientCAs set additionally requires
+	// callers to authenticate with a cluster certificate via mTLS
+	TLSConfig *tls.Config
+
+	// auth enables bearer-token user authentication when non-nil
+	// When nil, the API accepts unauthenticated requests
+	Auth *auth.TokenStore
 
 	server *http.Server
 }
@@ -47,15 +58,29 @@ type NodeView struct {
 
 func (a *Api) initRouter() {
 	a.Router = chi.NewRouter()
+
+	viewer := func(h http.HandlerFunc) http.HandlerFunc { return h }
+	admin := viewer
+	if a.Auth != nil {
+		viewer = func(h http.HandlerFunc) http.HandlerFunc {
+			return auth.RequireRoleHandler(auth.RoleViewer, h)
+		}
+		admin = func(h http.HandlerFunc) http.HandlerFunc {
+			return auth.RequireRoleHandler(auth.RoleAdmin, h)
+		}
+
+		a.Router.Use(auth.BearerAuth(a.Auth))
+	}
+
 	a.Router.Route("/tasks", func(r chi.Router) {
-		r.Post("/", a.StartTaskHandler)
-		r.Get("/", a.GetTasksHandler)
+		r.Get("/", viewer(a.GetTasksHandler))
+		r.Post("/", admin(a.StartTaskHandler))
 		r.Route("/{taskID}", func(r chi.Router) {
-			r.Delete("/", a.StopTaskHandler)
+			r.Delete("/", admin(a.StopTaskHandler))
 		})
 	})
 	a.Router.Route("/nodes", func(r chi.Router) {
-		r.Get("/", a.GetNodesHandler)
+		r.Get("/", viewer(a.GetNodesHandler))
 	})
 }
 
@@ -68,7 +93,13 @@ func (a *Api) Start() error {
 		ReadHeaderTimeout: apiReadHeaderTimeout,
 	}
 
-	err := a.server.ListenAndServe()
+	var err error
+	if a.TLSConfig != nil {
+		a.server.TLSConfig = a.TLSConfig
+		err = a.server.ListenAndServeTLS("", "")
+	} else {
+		err = a.server.ListenAndServe()
+	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("error raised when starting an http server: %w", err)
 	}
