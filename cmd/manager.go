@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/belyaevedu/philharmonic/httpclient"
 	"github.com/belyaevedu/philharmonic/manager"
 	"github.com/spf13/cobra"
 )
@@ -55,6 +56,29 @@ The manager controls the orchestration system. Is responsible for:
 			fmt.Printf("Notice: using the default worker list: %v\n", workers)
 		}
 
+		serverTLS, err := managerServerTLS()
+		if err != nil {
+			return err
+		}
+		workerClientTLS, err := managerWorkerClientTLS()
+		if err != nil {
+			return err
+		}
+		tokens, err := managerTokenStore()
+		if err != nil {
+			return err
+		}
+
+		// the manager talks to workers through the shared worker-facing client
+		httpclient.ConfigureWorkerClient(httpclient.Options{TLSConfig: workerClientTLS})
+
+		switch {
+		case tokens == nil:
+			fmt.Println("Warning: manager API auth is disabled (no manager.auth.token_file configured)")
+		case serverTLS == nil:
+			fmt.Println("Warning: bearer tokens will travel over plain HTTP (no manager.tls configured)")
+		}
+
 		m, err := manager.New(workers, scheduler, dbType)
 		if err != nil {
 			return err
@@ -67,7 +91,7 @@ The manager controls the orchestration system. Is responsible for:
 		go m.DoHealthChecks(ctx)
 		go m.RefreshNodeStats(ctx)
 
-		api := manager.Api{Address: host, Port: port, Manager: m}
+		api := manager.Api{Address: host, Port: port, Manager: m, TLSConfig: serverTLS, Auth: tokens}
 
 		errCh := make(chan error, 1)
 		go func() { errCh <- api.Start() }()
