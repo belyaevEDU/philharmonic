@@ -29,8 +29,7 @@ func BearerAuth(store *TokenStore) func(http.Handler) http.Handler {
 			id, ok := authenticate(r, store)
 			if !ok {
 				w.Header().Set("WWW-Authenticate", "Bearer")
-				err := handlers.HttpResponseHelper(w, "unauthorized: missing or invalid bearer token", http.StatusUnauthorized)
-				if err != nil {
+				if err := handlers.HttpResponseHelper(w, "unauthorized: missing or invalid bearer token", http.StatusUnauthorized); err != nil {
 					log.Printf("Error raised in BearerAuth middleware: %s\n", err)
 				}
 				return
@@ -85,15 +84,21 @@ func RequireRoleHandler(min Role, h http.HandlerFunc) http.HandlerFunc {
 // roleDenied writes a 401 Unauthorized/403 Forbidden response and reports
 // whether the request must be rejected
 func roleDenied(w http.ResponseWriter, r *http.Request, min Role) bool {
+	errorRaised := "Error raised in roleDenied: %s\n"
+
 	id, ok := IdentityFromContext(r.Context())
 	if !ok {
 		w.Header().Set("WWW-Authenticate", "Bearer")
-		_ = handlers.HttpResponseHelper(w, "unauthorized: authentication required", http.StatusUnauthorized)
+		if err := handlers.HttpResponseHelper(w, "unauthorized: authentication required", http.StatusUnauthorized); err != nil {
+			log.Printf(errorRaised, err)
+		}
 		return true
 	}
 	if !id.Role.Allows(min) {
 		msg := "forbidden: role " + string(id.Role) + " does not allow this operation (requires " + string(min) + ")"
-		_ = handlers.HttpResponseHelper(w, msg, http.StatusForbidden)
+		if err := handlers.HttpResponseHelper(w, msg, http.StatusForbidden); err != nil {
+			log.Printf(errorRaised, err)
+		}
 		return true
 	}
 	return false
