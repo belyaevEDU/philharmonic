@@ -32,8 +32,8 @@ You may give either the task's UUID or the task's name.`,
 		// submit time (Docker rejects bad ones later), so such tasks can exist.
 		// PathEscape keeps a name from breaking or misrouting the request.
 		encoded := url.PathEscape(args[0])
-		requestURL := fmt.Sprintf("http://%s/tasks/%s", manager, encoded)
-		client := httpclient.New()
+		requestURL := httpclient.ManagerURL(manager, "/tasks/"+encoded)
+		client := httpclient.Manager()
 		req, err := http.NewRequest(http.MethodDelete, requestURL, nil)
 		if err != nil {
 			return fmt.Errorf("error creating request %s: %w", requestURL, err)
