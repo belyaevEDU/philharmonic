@@ -34,8 +34,8 @@ The nodes command allows a user to get information about the nodes in the cluste
 			return err
 		}
 
-		url := fmt.Sprintf("http://%s/nodes", manager)
-		resp, err := httpclient.New().Get(url) // #nosec G107
+		url := httpclient.ManagerURL(manager, "/nodes")
+		resp, err := httpclient.Manager().Get(url) // #nosec G107
 		if err != nil {
 			return fmt.Errorf("error connecting to manager: %w", err)
 		}
@@ -46,7 +46,11 @@ The nodes command allows a user to get information about the nodes in the cluste
 		}()
 
 		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("manager returned status %d", resp.StatusCode)
+			errBody, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return fmt.Errorf("manager returned status %d, couldn't read the response body: %w", resp.StatusCode, err)
+			}
+			return fmt.Errorf("manager returned status %d: %s", resp.StatusCode, responseBodyMessage(errBody))
 		}
 
 		body, err := io.ReadAll(resp.Body)
