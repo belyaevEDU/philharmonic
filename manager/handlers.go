@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/belyaevedu/philharmonic/auth"
 	"github.com/belyaevedu/philharmonic/handlers"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/go-chi/chi/v5"
@@ -52,7 +53,11 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Added task %v\n", te.Task.ID)
+	if id, ok := auth.IdentityFromContext(r.Context()); ok {
+		log.Printf("Added task %v (user %q)\n", te.Task.ID, id.User)
+	} else {
+		log.Printf("Added task %v\n", te.Task.ID)
+	}
 	w.WriteHeader(http.StatusCreated)
 	err = json.NewEncoder(w).Encode(te.Task)
 	if err != nil {
