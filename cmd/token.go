@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/belyaevedu/philharmonic/auth"
@@ -43,13 +44,20 @@ Roles:
 			return err
 		}
 
-		out := cmd.OutOrStdout()
-		fmt.Fprintf(out, "token: %s\n", token)
-		fmt.Fprintf(out, "\nAppend this entry to the manager's token file (manager.auth.token_file):\n")
-		fmt.Fprintf(out, "- user: %q\n", user)
-		fmt.Fprintf(out, "  role: %q\n", role)
-		fmt.Fprintf(out, "  token_hash: %q\n", auth.HashToken(token))
-		fmt.Fprintf(out, "\nTreat the token like a password; only its hash is stored on the manager.\n")
+		// writes to a strings.Builder cannot fail, so the whole block is
+		// assembled in memory and flushed to the real output with a single
+		// checked write
+		var b strings.Builder
+		fmt.Fprintf(&b, "token: %s\n", token)
+		fmt.Fprintf(&b, "\nAppend this entry to the manager's token file (manager.auth.token_file):\n")
+		fmt.Fprintf(&b, "- user: %q\n", user)
+		fmt.Fprintf(&b, "  role: %q\n", role)
+		fmt.Fprintf(&b, "  token_hash: %q\n", auth.HashToken(token))
+		fmt.Fprintf(&b, "\nTreat the token like a password; only its hash is stored on the manager.\n")
+
+		if _, err := io.WriteString(cmd.OutOrStdout(), b.String()); err != nil {
+			return err
+		}
 		return nil
 	},
 }
