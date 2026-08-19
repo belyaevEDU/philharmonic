@@ -577,7 +577,7 @@ func clientToken(c *ClientConfig) (string, error) {
 		}
 		return token, nil
 	}
-	if path := resolvePath(strVal(c.TokenFile)); path != "" {
+	if path := resolvePath(strVal(c.TokenFile)); path != "" { // #nosec G304, intended behaviour
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("client.token_file: %w", err)
