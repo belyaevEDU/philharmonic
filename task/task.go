@@ -37,6 +37,36 @@ type PortMapping struct {
 	Protocol      network.IPProtocol
 }
 
+// restart policies a task can declare
+const (
+	RestartPolicyNone          = "no"
+	RestartPolicyAlways        = "always"
+	RestartPolicyOnFailure     = "on-failure"
+	RestartPolicyUnlessStopped = "unless-stopped"
+)
+
+// ValidateRestartPolicy accepts an empty policy, defaults to on-failure
+func ValidateRestartPolicy(p string) error {
+	switch p {
+	case "", RestartPolicyNone, RestartPolicyAlways, RestartPolicyOnFailure, RestartPolicyUnlessStopped:
+		return nil
+	}
+	return fmt.Errorf(
+		"invalid restart policy %q: want %q, %q, %q, %q or empty",
+		p, RestartPolicyNone, RestartPolicyAlways, RestartPolicyOnFailure, RestartPolicyUnlessStopped,
+	)
+}
+
+// reports whether a Failed task with this policy
+// may be restarted by the orchestrator
+func ShouldRestart(policy string) bool {
+	switch policy {
+	case "", RestartPolicyOnFailure, RestartPolicyAlways, RestartPolicyUnlessStopped:
+		return true
+	}
+	return false
+}
+
 type HealthCheckType string
 
 const (
@@ -100,6 +130,7 @@ type Task struct {
 	FailureReason string `json:",omitempty"`
 	StartTime     time.Time
 	FinishTime    time.Time
+	Timeout       int64 // max seconds a task may run before the worker kills it, 0 = unlimited
 }
 
 func (t Task) Key() uuid.UUID { // store.Keyable impl
@@ -414,8 +445,9 @@ func (d *Docker) Run() DockerResult {
 		return DockerResult{Error: err}
 	}
 
+	// the orchestrator manages the restart policy itself
 	rp := container.RestartPolicy{
-		Name: container.RestartPolicyMode(d.Config.RestartPolicy),
+		Name: container.RestartPolicyDisabled,
 	}
 
 	r := container.Resources{

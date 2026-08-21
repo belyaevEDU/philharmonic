@@ -238,6 +238,12 @@ func (m *Manager) AddTask(te task.TaskEvent) error {
 		if err := task.ValidatePortMappings(te.Task.Ports); err != nil {
 			return err
 		}
+		if err := task.ValidateRestartPolicy(te.Task.RestartPolicy); err != nil {
+			return err
+		}
+		if te.Task.Timeout < 0 {
+			return fmt.Errorf("task timeout must not be negative, got %d", te.Task.Timeout)
+		}
 		m.mu.Lock()
 		if m.TaskDb == nil {
 			m.mu.Unlock()
@@ -1175,6 +1181,15 @@ func (m *Manager) restartFailedTasks() {
 			continue
 		}
 
+		if !task.ShouldRestart(t.RestartPolicy) {
+			if t.FinishTime.IsZero() {
+				reason := fmt.Sprintf("restart policy %q does not permit a restart", t.RestartPolicy)
+				log.Printf("Task %s failed and its restart policy forbids a restart; stopping its container\n", t.ID)
+				m.stopTaskTerminal(t, reason)
+			}
+			continue
+		}
+
 		if t.RestartCount < MaxRestarts {
 			err := m.restartTask(t)
 			if err != nil {
@@ -1258,6 +1273,13 @@ func (m *Manager) runChecker(ctx context.Context, t task.Task) {
 
 			if t.RestartCount >= MaxRestarts {
 				reason := fmt.Sprintf("health check failed after all restarts & retries. last error: %v", err)
+				log.Printf("Task %s: %s; marking failed and stopping its container\n", t.ID, reason)
+				m.stopTaskTerminal(t, reason)
+				return
+			}
+
+			if !task.ShouldRestart(t.RestartPolicy) {
+				reason := fmt.Sprintf("health check failed (%v) and restart policy %q does not permit a restart", err, t.RestartPolicy)
 				log.Printf("Task %s: %s; marking failed and stopping its container\n", t.ID, reason)
 				m.stopTaskTerminal(t, reason)
 				return
