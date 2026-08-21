@@ -12,11 +12,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/belyaevedu/philharmonic/queue"
 	"github.com/belyaevedu/philharmonic/stats"
 	"github.com/belyaevedu/philharmonic/store"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/cakturk/go-netstat/netstat"
-	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
 )
@@ -37,7 +37,7 @@ var (
 
 type Worker struct {
 	Name  string
-	Queue queue.Queue
+	Queue *queue.Queue[task.Task]
 	Db    store.Store[task.Task]
 	LogDb store.Store[task.TaskLogs]
 	Stats *stats.Stats
@@ -49,7 +49,6 @@ type Worker struct {
 
 	dbMu    sync.RWMutex
 	logMu   sync.Mutex
-	queueMu sync.Mutex
 	statsMu sync.RWMutex
 
 	// CPU usage is a rate, so it needs two samples of the cumulative /proc/stat counters
@@ -86,7 +85,7 @@ func New(name, dbType string) (*Worker, error) {
 
 	return &Worker{
 		Name:   name,
-		Queue:  *queue.New(),
+		Queue:  queue.New[task.Task](),
 		Db:     db,
 		LogDb:  logDb,
 		boltDb: boltDb,
@@ -360,39 +359,20 @@ func (w *Worker) AddTask(t task.Task) error {
 		w.dbMu.Unlock()
 	}
 
-	w.queueMu.Lock()
 	w.Queue.Enqueue(t)
-	w.queueMu.Unlock()
 	return nil
 }
 
 func (w *Worker) queueLen() int {
-	w.queueMu.Lock()
-	defer w.queueMu.Unlock()
 	return w.Queue.Len()
-}
-
-func (w *Worker) dequeueTask() any {
-	w.queueMu.Lock()
-	defer w.queueMu.Unlock()
-	return w.Queue.Dequeue()
 }
 
 // action is picked depending on the task's state
 func (w *Worker) runTask() task.DockerResult {
-	t := w.dequeueTask()
-	if t == nil {
+	taskQueued, ok := w.Queue.Dequeue()
+	if !ok {
 		log.Println("No tasks in the queue")
 		return task.DockerResult{Error: nil}
-	}
-
-	taskQueued, ok := t.(task.Task)
-	if !ok {
-		return task.DockerResult{
-			Error: errors.New(
-				"error pulling a task off the queue: somehow there's a non-task.Task element",
-			),
-		}
 	}
 
 	w.dbMu.Lock()
