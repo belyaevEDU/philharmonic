@@ -29,6 +29,11 @@ var (
 	DbFilename   = "%s_tasks.db" // %s is substituted with the worker's name
 	DbBucketName = "tasks"
 
+	DbLogFilename   = "%s_logs.db" // %s is substituted with the worker's name
+	DbLogBucketName = "logs"
+
+	LogCaptureMaxLines = 1000
+
 	LoopInterval = 10 * time.Second
 )
 
@@ -36,9 +41,11 @@ type Worker struct {
 	Name  string
 	Queue queue.Queue
 	Db    store.Store[task.Task]
+	LogDb store.Store[task.TaskLogs]
 	Stats *stats.Stats
 
 	dbMu    sync.RWMutex
+	logMu   sync.Mutex
 	queueMu sync.Mutex
 	statsMu sync.RWMutex
 
@@ -50,13 +57,24 @@ type Worker struct {
 
 func New(name, dbType string) (*Worker, error) {
 	var db store.Store[task.Task]
+	var logDb store.Store[task.TaskLogs]
 	var err error
 	switch dbType {
 	case store.MemoryType:
 		db = store.NewInMemoryStore[task.Task]()
+		logDb = store.NewInMemoryStore[task.TaskLogs]()
 	case store.BoltType:
 		filename := fmt.Sprintf(DbFilename, name)
 		db, err = store.NewBoltStore[task.Task](filename, DbFilemode, DbBucketName)
+		if err != nil {
+			return nil, fmt.Errorf("opening tasks db: %w", err)
+		}
+		logFilename := fmt.Sprintf(DbLogFilename, name)
+		logDb, err = store.NewBoltStore[task.TaskLogs](logFilename, DbFilemode, DbLogBucketName)
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("opening logs db: %w", err)
+		}
 	default:
 		return nil, fmt.Errorf("unknown db type %q", dbType)
 	}
@@ -69,18 +87,23 @@ func New(name, dbType string) (*Worker, error) {
 		Name:  name,
 		Queue: *queue.New(),
 		Db:    db,
+		LogDb: logDb,
 	}, nil
 }
 
 func (w *Worker) Close() error {
 	w.dbMu.Lock()
 	defer w.dbMu.Unlock()
-	if w.Db == nil {
-		return nil
+	var errs []error
+	if w.Db != nil {
+		errs = append(errs, w.Db.Close())
+		w.Db = nil
 	}
-	err := w.Db.Close()
-	w.Db = nil
-	return err
+	if w.LogDb != nil {
+		errs = append(errs, w.LogDb.Close())
+		w.LogDb = nil
+	}
+	return errors.Join(errs...)
 }
 
 func (w *Worker) listTasks() ([]*task.Task, error) {
