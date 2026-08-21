@@ -26,10 +26,8 @@ const (
 )
 
 var (
-	DbFilename   = "%s_tasks.db" // %s is substituted with the worker's name
-	DbBucketName = "tasks"
-
-	DbLogFilename   = "%s_logs.db" // %s is substituted with the worker's name
+	DbFilename      = "%s.db" // %s is substituted with the worker's name
+	DbBucketName    = "tasks"
 	DbLogBucketName = "logs"
 
 	LogCaptureMaxLines = 1000
@@ -43,6 +41,11 @@ type Worker struct {
 	Db    store.Store[task.Task]
 	LogDb store.Store[task.TaskLogs]
 	Stats *stats.Stats
+
+	// owns the single bbolt file backing all three stores in bolt mode.
+	// is nil for memory mode
+	// the stores themselves are bucket views on it
+	boltDb *store.SharedBolt
 
 	dbMu    sync.RWMutex
 	logMu   sync.Mutex
@@ -58,52 +61,52 @@ type Worker struct {
 func New(name, dbType string) (*Worker, error) {
 	var db store.Store[task.Task]
 	var logDb store.Store[task.TaskLogs]
-	var err error
+	var boltDb *store.SharedBolt
 	switch dbType {
 	case store.MemoryType:
 		db = store.NewInMemoryStore[task.Task]()
 		logDb = store.NewInMemoryStore[task.TaskLogs]()
 	case store.BoltType:
-		filename := fmt.Sprintf(DbFilename, name)
-		db, err = store.NewBoltStore[task.Task](filename, DbFilemode, DbBucketName)
-		if err != nil {
-			return nil, fmt.Errorf("opening tasks db: %w", err)
+		sdb, dbErr := store.OpenSharedBolt(fmt.Sprintf(DbFilename, name), DbFilemode)
+		if dbErr != nil {
+			return nil, fmt.Errorf("opening worker db: %w", dbErr)
 		}
-		logFilename := fmt.Sprintf(DbLogFilename, name)
-		logDb, err = store.NewBoltStore[task.TaskLogs](logFilename, DbFilemode, DbLogBucketName)
-		if err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("opening logs db: %w", err)
+		db, dbErr = store.Bucket[task.Task](sdb, DbBucketName)
+		if dbErr != nil {
+			_ = sdb.Close()
+			return nil, fmt.Errorf("opening tasks bucket: %w", dbErr)
 		}
+		logDb, dbErr = store.Bucket[task.TaskLogs](sdb, DbLogBucketName)
+		if dbErr != nil {
+			_ = sdb.Close()
+			return nil, fmt.Errorf("opening logs bucket: %w", dbErr)
+		}
+		boltDb = sdb
 	default:
 		return nil, fmt.Errorf("unknown db type %q", dbType)
 	}
 
-	if err != nil {
-		return nil, err
-	}
-
 	return &Worker{
-		Name:  name,
-		Queue: *queue.New(),
-		Db:    db,
-		LogDb: logDb,
+		Name:   name,
+		Queue:  *queue.New(),
+		Db:     db,
+		LogDb:  logDb,
+		boltDb: boltDb,
 	}, nil
 }
 
 func (w *Worker) Close() error {
 	w.dbMu.Lock()
 	defer w.dbMu.Unlock()
-	var errs []error
-	if w.Db != nil {
-		errs = append(errs, w.Db.Close())
-		w.Db = nil
+
+	w.Db = nil
+	w.LogDb = nil
+	var err error
+	if w.boltDb != nil {
+		err = w.boltDb.Close()
+		w.boltDb = nil
 	}
-	if w.LogDb != nil {
-		errs = append(errs, w.LogDb.Close())
-		w.LogDb = nil
-	}
-	return errors.Join(errs...)
+	return err
 }
 
 func (w *Worker) listTasks() ([]*task.Task, error) {
