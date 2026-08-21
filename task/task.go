@@ -389,18 +389,28 @@ type DockerResult struct {
 
 func (d *Docker) Run() DockerResult {
 	ctx := context.Background()
-	reader, err := d.Client.ImagePull(ctx, d.Config.Image, client.ImagePullOptions{})
-	if err != nil {
-		log.Printf("Error pulling image %s: %v\n", d.Config.Image, err)
-		return DockerResult{Error: err}
-	}
 
-	_, err = io.Copy(os.Stdout, reader)
-	if err != nil {
-		log.Printf(
-			"Error copying the reader for ImagePull to stdout for image %s: %v\n",
-			d.Config.Image, err,
-		)
+	// pull only when the image isn't already present on this worker
+	if _, err := d.Client.ImageInspect(ctx, d.Config.Image); err == nil {
+		log.Printf("Image %s already exists locally; skipping pull\n", d.Config.Image)
+	} else if errdefs.IsNotFound(err) {
+		log.Printf("Image %s not found locally; pulling\n", d.Config.Image)
+		reader, err := d.Client.ImagePull(ctx, d.Config.Image, client.ImagePullOptions{})
+		if err != nil {
+			log.Printf("Error pulling image %s: %v\n", d.Config.Image, err)
+			return DockerResult{Error: err}
+		}
+
+		_, err = io.Copy(os.Stdout, reader)
+		if err != nil {
+			log.Printf(
+				"Error copying the reader for ImagePull to stdout for image %s: %v\n",
+				d.Config.Image, err,
+			)
+			return DockerResult{Error: err}
+		}
+	} else {
+		log.Printf("Error inspecting image %s: %v\n", d.Config.Image, err)
 		return DockerResult{Error: err}
 	}
 
