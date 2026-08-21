@@ -72,10 +72,12 @@ lines (passed through to Docker for live logs, applied to stored logs).`,
 		if state == "" {
 			state = "unknown"
 		}
-		if exitCode != "" {
-			fmt.Fprintf(out, "state=%s exit=%s\n", state, exitCode)
-		} else {
-			fmt.Fprintf(out, "state=%s exit=-\n", state)
+		exit := exitCode
+		if exit == "" {
+			exit = "-"
+		}
+		if _, err := fmt.Fprintf(out, "state=%s exit=%s\n", state, exit); err != nil {
+			return fmt.Errorf("error writing logs header: %w", err)
 		}
 
 		_, err = io.Copy(out, resp.Body)
