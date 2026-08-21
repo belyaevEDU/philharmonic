@@ -40,36 +40,36 @@ var (
 
 	LoopInterval = 10 * time.Second
 
-	DbTasksFile   = "tasks.db"
-	DbEventsFile  = "events.db"
-	DbTaskBucket  = "tasks"
-	DbEventBucket = "events"
+	DbFile = "philharmonic.db"
+
+	DbTaskBucket       = "tasks"
+	DbEventBucket      = "events"
+	DbAssignmentBucket = "assignments"
 )
 
 type Manager struct {
-	Pending          queue.Queue
-	TaskDb           store.Store[task.Task]
-	EventDb          store.Store[task.TaskEvent]
-	WorkerTaskMap    map[string][]uuid.UUID
-	TaskWorkerMap    map[uuid.UUID]string
-	mu               sync.RWMutex
-	pendingMu        sync.Mutex
-	portMu           sync.Mutex
-	checkers         map[uuid.UUID]context.CancelFunc
-	portReservations map[string]map[string]uuid.UUID
+	Pending     queue.Queue
+	TaskDb      store.Store[task.Task]
+	EventDb     store.Store[task.TaskEvent]
+	Assignments store.Store[Assignment]
+
+	// owns the single bbolt file backing all three stores in bolt mode.
+	// is nil for memory mode
+	// the stores themselves are bucket views on it
+	boltDb *store.SharedBolt
+
+	Reservations ReservationStore
+	mu           sync.RWMutex
+	pendingMu    sync.Mutex
+	checkers     map[uuid.UUID]context.CancelFunc
 
 	WorkerNodes []*node.Node
 	Scheduler   scheduler.Scheduler
 }
 
 func New(workers []string, schedulerType, dbType string) (*Manager, error) {
-	workerTaskMap := make(map[string][]uuid.UUID)
-	taskWorkerMap := make(map[uuid.UUID]string)
-
 	var nodes []*node.Node
 	for _, worker := range workers {
-		workerTaskMap[worker] = []uuid.UUID{}
-
 		n, err := node.New(worker, WorkerRole)
 		if err != nil {
 			return nil, fmt.Errorf("invalid worker %q: %w", worker, err)
@@ -89,69 +89,99 @@ func New(workers []string, schedulerType, dbType string) (*Manager, error) {
 	}
 
 	m := Manager{
-		Pending:          *queue.New(),
-		WorkerTaskMap:    workerTaskMap,
-		TaskWorkerMap:    taskWorkerMap,
-		checkers:         make(map[uuid.UUID]context.CancelFunc),
-		portReservations: make(map[string]map[string]uuid.UUID),
-		WorkerNodes:      nodes,
-		Scheduler:        s,
+		Pending:      *queue.New(),
+		Reservations: NewReservationTable(),
+		checkers:     make(map[uuid.UUID]context.CancelFunc),
+		WorkerNodes:  nodes,
+		Scheduler:    s,
 	}
 
 	var ts store.Store[task.Task]
 	var es store.Store[task.TaskEvent]
-	var err error
+	var as store.Store[Assignment]
 	switch dbType {
 	case store.MemoryType:
 		ts = store.NewInMemoryStore[task.Task]()
 		es = store.NewInMemoryStore[task.TaskEvent]()
+		as = store.NewInMemoryStore[Assignment]()
 	case store.BoltType:
-		ts, err = store.NewBoltStore[task.Task](DbTasksFile, DbFilemode, DbTaskBucket)
-		if err != nil {
-			return nil, fmt.Errorf("opening tasks db: %w", err)
+		sdb, dbErr := store.OpenSharedBolt(DbFile, DbFilemode)
+		if dbErr != nil {
+			return nil, fmt.Errorf("opening %s: %w", DbFile, dbErr)
 		}
-		es, err = store.NewBoltStore[task.TaskEvent](DbEventsFile, DbFilemode, DbEventBucket)
-		if err != nil {
-			_ = ts.Close()
-			return nil, fmt.Errorf("opening events db: %w", err)
+		ts, dbErr = store.Bucket[task.Task](sdb, DbTaskBucket)
+		if dbErr != nil {
+			_ = sdb.Close()
+			return nil, fmt.Errorf("opening tasks bucket: %w", dbErr)
 		}
+		es, dbErr = store.Bucket[task.TaskEvent](sdb, DbEventBucket)
+		if dbErr != nil {
+			_ = sdb.Close()
+			return nil, fmt.Errorf("opening events bucket: %w", dbErr)
+		}
+		as, dbErr = store.Bucket[Assignment](sdb, DbAssignmentBucket)
+		if dbErr != nil {
+			_ = sdb.Close()
+			return nil, fmt.Errorf("opening assignments bucket: %w", dbErr)
+		}
+		m.boltDb = sdb
 	default:
 		return nil, errors.New("unknown db type given")
 	}
 
-	if err != nil {
-		return nil, err
-	}
-
 	m.TaskDb = ts
 	m.EventDb = es
+	m.Assignments = as
+	m.restoreReservations()
 	return &m, nil
+}
+
+// reclaims the pinned host ports of non-terminal tasks
+// recovered from TaskDb after a manager restart
+func (m *Manager) restoreReservations() {
+	persisted, err := m.TaskDb.List()
+	if err != nil {
+		log.Printf("Error listing tasks for reservation restore: %v\n", err)
+		return
+	}
+	for _, t := range persisted {
+		if t == nil || (t.State != task.Scheduled && t.State != task.Running) || !hasPinnedHostPorts(t) {
+			continue
+		}
+		owner := m.assignmentLocked(t.ID)
+		if owner == "" {
+			continue
+		}
+		if !m.Reservations.TryReserve(owner, t) {
+			log.Printf("Conflicting restored reservations for task %s on %s; leaving to worker inventory\n", t.ID, owner)
+		}
+	}
 }
 
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	var errs []error
-	if m.TaskDb != nil {
-		errs = append(errs, m.TaskDb.Close())
-		m.TaskDb = nil
+	m.TaskDb = nil
+	m.EventDb = nil
+	m.Assignments = nil
+
+	var err error
+	if m.boltDb != nil {
+		err = m.boltDb.Close()
+		m.boltDb = nil
 	}
-	if m.EventDb != nil {
-		errs = append(errs, m.EventDb.Close())
-		m.EventDb = nil
-	}
-	return errors.Join(errs...)
+	return err
 }
 
 func (m *Manager) SelectWorker(t *task.Task) (*node.Node, error) {
-	m.portMu.Lock()
-	defer m.portMu.Unlock()
+	m.Reservations.Lock()
+	defer m.Reservations.Unlock()
 	return m.selectWorkerLocked(t, "")
 }
 
 // filters candidates using a complete port inventory and the manager's reservations
-// the caller must hold portMu
+// the caller must hold m.Reservations
 func (m *Manager) selectWorkerLocked(t *task.Task, selfOwner string) (*node.Node, error) {
 	if t == nil {
 		return nil, errors.New("cannot select a worker for a nil task")
@@ -178,7 +208,7 @@ func (m *Manager) selectWorkerLocked(t *task.Task, selfOwner string) (*node.Node
 				continue
 			}
 		}
-		if m.portReservationConflictLocked(c.Address, t, false) {
+		if m.Reservations.ConflictsLocked(c.Address, t, false) {
 			continue
 		}
 		able = append(able, c)
@@ -199,21 +229,20 @@ func (m *Manager) selectWorkerLocked(t *task.Task, selfOwner string) (*node.Node
 }
 
 func (m *Manager) selectAndReserveWorker(t *task.Task, owner string) (*node.Node, error) {
-	m.portMu.Lock()
-	defer m.portMu.Unlock()
+	m.Reservations.Lock()
+	defer m.Reservations.Unlock()
 
 	if err := task.ValidatePortMappings(t.Ports); err != nil {
 		return nil, err
 	}
 	if owner != "" { // restart branch
 		ownerNode := m.workerByAddress(owner)
-		if ownerNode != nil && !m.portReservationConflictLocked(owner, t, true) {
+		if ownerNode != nil && !m.Reservations.ConflictsLocked(owner, t, true) {
 			if !hasPinnedHostPorts(t) {
 				return ownerNode, nil
 			}
 			occ, err := m.fetchWorkerPorts(ownerNode)
-			if err == nil && m.canHost(t, occ, true) {
-				m.reservePortsLocked(owner, t)
+			if err == nil && m.canHost(t, occ, true) && m.Reservations.TryReserveLocked(owner, t) {
 				return ownerNode, nil
 			}
 			if err != nil {
@@ -226,7 +255,11 @@ func (m *Manager) selectAndReserveWorker(t *task.Task, owner string) (*node.Node
 	if err != nil {
 		return nil, err
 	}
-	m.reservePortsLocked(selected.Address, t)
+	// impossible while the table's lock is held and selectWorkerLocked checked
+	// conflicts for every candidate; handled defensively anyway
+	if !m.Reservations.TryReserveLocked(selected.Address, t) {
+		return nil, fmt.Errorf("lost race reserving host ports for task %s on %s", t.ID, selected.Address)
+	}
 	return selected, nil
 }
 
@@ -331,17 +364,26 @@ func (m *Manager) deleteTask(t task.Task) error {
 		m.mu.Unlock()
 		return err
 	}
-	owner := m.TaskWorkerMap[t.ID]
-	delete(m.TaskWorkerMap, t.ID)
-	if owner != "" {
-		m.removeTaskID(owner, t.ID)
+
+	var owner string
+	if m.Assignments != nil {
+		a, err := m.Assignments.Get(t.ID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			log.Printf("Error reading assignment for task %s: %v\n", t.ID, err)
+		}
+		if a != nil {
+			owner = a.Worker
+		}
+		if err := m.Assignments.Delete(t.ID); err != nil {
+			log.Printf("Error deleting assignment for task %s: %v\n", t.ID, err)
+		}
 	}
 	m.mu.Unlock()
 
 	// durable deletion succeeded; clean up the rest
 	m.removePendingTask(t.ID)
 	if owner != "" {
-		m.releasePorts(owner, &t)
+		m.Reservations.Release(owner, &t)
 	}
 	if t.State == task.Failed && t.ContainerID != "" && owner != "" {
 		m.bestEffortStopOldContainer(owner, t)
@@ -429,6 +471,19 @@ func (m *Manager) getTaskViews() []TaskView {
 		return []TaskView{}
 	}
 
+	workerByTask := make(map[uuid.UUID]string)
+	if m.Assignments != nil {
+		assignments, err := m.Assignments.List()
+		if err != nil {
+			log.Printf("Error listing assignments: %v\n", err)
+		}
+		for _, a := range assignments {
+			if a != nil {
+				workerByTask[a.TaskID] = a.Worker
+			}
+		}
+	}
+
 	views := make([]TaskView, 0, len(persisted))
 	for _, t := range persisted {
 		if t == nil {
@@ -436,7 +491,7 @@ func (m *Manager) getTaskViews() []TaskView {
 		}
 		views = append(views, TaskView{
 			Task:   *t,
-			Worker: m.TaskWorkerMap[t.ID],
+			Worker: workerByTask[t.ID],
 		})
 	}
 	return views
@@ -481,7 +536,32 @@ func (m *Manager) getTask(id uuid.UUID) (task.Task, bool) {
 func (m *Manager) taskWorker(id uuid.UUID) string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.TaskWorkerMap[id]
+	return m.assignmentLocked(id)
+}
+
+// reads the persisted owner of a task
+// caller must hold at least m.mu.RLock
+func (m *Manager) assignmentLocked(id uuid.UUID) string {
+	if m.Assignments == nil {
+		return ""
+	}
+	a, err := m.Assignments.Get(id)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			log.Printf("Error reading assignment for task %s: %v\n", id, err)
+		}
+		return ""
+	}
+	return a.Worker
+}
+
+// persists the owner of a task
+// store.Store.Put is idempotent, so recommitting an unchanged owner is a no-op by design
+func (m *Manager) setAssignment(id uuid.UUID, worker string) error {
+	if m.Assignments == nil {
+		return errors.New("assignments db is nil")
+	}
+	return m.Assignments.Put(id, &Assignment{TaskID: id, Worker: worker})
 }
 
 func (m *Manager) workerByAddress(address string) *node.Node {
@@ -515,7 +595,7 @@ func (m *Manager) SendWork() {
 				return
 			}
 			if !isStop {
-				reserved = m.reservePorts(w.Address, &t)
+				reserved = m.Reservations.TryReserve(w.Address, &t)
 				if !reserved {
 					log.Printf("Cannot reserve host ports for task %s on worker %s\n", t.ID, w.Address)
 					m.markFailed(t.ID, t.RestartCount+1, "host port is reserved by another task")
@@ -575,7 +655,7 @@ func (m *Manager) SendWork() {
 		data, err := json.Marshal(te)
 		if err != nil {
 			if reserved {
-				m.releasePorts(w.Address, &t)
+				m.Reservations.Release(w.Address, &t)
 			}
 			log.Printf("Error raised when marshalling task object %v: %v\n", t, err)
 			return
@@ -586,7 +666,7 @@ func (m *Manager) SendWork() {
 		resp, err := httpclient.Worker().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 		if err != nil {
 			if reserved {
-				m.releasePorts(w.Address, &t)
+				m.Reservations.Release(w.Address, &t)
 			}
 			fmt.Printf("Error connecting to %v: %v\n", w, err)
 			m.enqueuePending(te)
@@ -602,7 +682,7 @@ func (m *Manager) SendWork() {
 		d := json.NewDecoder(resp.Body)
 		if resp.StatusCode != http.StatusCreated {
 			if reserved {
-				m.releasePorts(w.Address, &t)
+				m.Reservations.Release(w.Address, &t)
 			}
 			hr := handlers.HTTPResponse{}
 			if err := d.Decode(&hr); err != nil {
@@ -645,16 +725,15 @@ func (m *Manager) SendWork() {
 			if _, getErr := m.TaskDb.Get(t.ID); getErr != nil {
 				m.mu.Unlock()
 				if reserved {
-					m.releasePorts(w.Address, &t)
+					m.Reservations.Release(w.Address, &t)
 				}
 				log.Printf("Task %s was cancelled while starting on worker %s; stopping orphaned container\n", t.ID, w.Address)
 				m.bestEffortStopOldContainer(w.Address, respTask)
 				return
 			}
-			if m.TaskWorkerMap[t.ID] != w.Address {
-				m.WorkerTaskMap[w.Address] = append(m.WorkerTaskMap[w.Address], t.ID)
+			if err := m.setAssignment(t.ID, w.Address); err != nil {
+				log.Printf("Error storing assignment for task %s: %v\n", t.ID, err)
 			}
-			m.TaskWorkerMap[t.ID] = w.Address
 			if m.TaskDb == nil {
 				log.Printf("Cannot store task %s: task db is nil\n", t.ID)
 			} else if err := m.TaskDb.Put(t.ID, &t); err != nil {
@@ -664,7 +743,7 @@ func (m *Manager) SendWork() {
 		m.mu.Unlock()
 
 		if isStop {
-			m.releasePorts(w.Address, &t)
+			m.Reservations.Release(w.Address, &t)
 		}
 
 		if decodeErr == nil {
@@ -877,7 +956,7 @@ func (m *Manager) restartTask(t task.Task) error {
 
 	data, err := json.Marshal(te)
 	if err != nil {
-		m.releasePorts(w.Address, &next)
+		m.Reservations.Release(w.Address, &next)
 		reason := fmt.Sprintf("unable to marshal restart event: %v", err)
 		m.markFailed(t.ID, t.RestartCount+1, reason)
 		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
@@ -887,7 +966,7 @@ func (m *Manager) restartTask(t task.Task) error {
 	// ignoring gosec's G107 since the url is not from external input, but from an internal config
 	resp, err := httpclient.Worker().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
-		m.releasePorts(w.Address, &next)
+		m.Reservations.Release(w.Address, &next)
 		// the worker never saw the restart, so don't burn a restart slot
 		reason := fmt.Sprintf("could not reach worker %s to restart: %v", w.Address, err)
 		m.markFailed(t.ID, t.RestartCount, reason)
@@ -901,7 +980,7 @@ func (m *Manager) restartTask(t task.Task) error {
 
 	d := json.NewDecoder(resp.Body)
 	if resp.StatusCode != http.StatusCreated {
-		m.releasePorts(w.Address, &next)
+		m.Reservations.Release(w.Address, &next)
 		hr := handlers.HTTPResponse{}
 		if err := d.Decode(&hr); err != nil {
 			log.Printf("Error decoding rejection response: %v\n", err)
@@ -917,14 +996,11 @@ func (m *Manager) restartTask(t task.Task) error {
 	}
 
 	m.mu.Lock()
-	oldOwner := m.TaskWorkerMap[t.ID]
-	if oldOwner != w.Address {
-		if oldOwner != "" {
-			m.removeTaskID(oldOwner, t.ID)
-		}
-		m.WorkerTaskMap[w.Address] = append(m.WorkerTaskMap[w.Address], t.ID)
+	oldOwner := m.assignmentLocked(t.ID)
+	if err := m.setAssignment(t.ID, w.Address); err != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("cannot store assignment for restarted task %s: %w", t.ID, err)
 	}
-	m.TaskWorkerMap[t.ID] = w.Address
 	if m.TaskDb == nil {
 		m.mu.Unlock()
 		return fmt.Errorf("cannot store restarted task %s: task db is nil", t.ID)
@@ -936,7 +1012,7 @@ func (m *Manager) restartTask(t task.Task) error {
 	m.mu.Unlock()
 
 	if oldOwner != "" && oldOwner != w.Address {
-		m.releasePorts(oldOwner, &t)
+		m.Reservations.Release(oldOwner, &t)
 		m.bestEffortStopOldContainer(oldOwner, t)
 	}
 
@@ -949,16 +1025,6 @@ func (m *Manager) restartTask(t task.Task) error {
 
 	log.Printf("Restarted task %s on worker %s\n", t.ID, w.Address)
 	return nil
-}
-
-func (m *Manager) removeTaskID(worker string, id uuid.UUID) {
-	tasks := m.WorkerTaskMap[worker]
-	for i, tid := range tasks {
-		if tid == id {
-			m.WorkerTaskMap[worker] = append(tasks[:i], tasks[i+1:]...)
-			return
-		}
-	}
 }
 
 // markFailed records a task as Failed with the given restart count and reason
@@ -1031,7 +1097,7 @@ func (m *Manager) bestEffortStopOldContainer(addr string, t task.Task) {
 
 func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
 	m.mu.Lock()
-	w := m.TaskWorkerMap[t.ID]
+	w := m.assignmentLocked(t.ID)
 	t.State = task.Failed
 	t.FailureReason = reason
 	t.FinishTime = time.Now().UTC()
@@ -1042,7 +1108,7 @@ func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
 	}
 	m.mu.Unlock()
 
-	m.releasePorts(w, &t)
+	m.Reservations.Release(w, &t)
 	if w == "" {
 		log.Printf("No worker owns terminal task %s; cannot send cleanup stop\n", t.ID)
 		return
