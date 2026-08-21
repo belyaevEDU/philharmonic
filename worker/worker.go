@@ -73,13 +73,11 @@ func New(name, dbType string) (*Worker, error) {
 		}
 		db, dbErr = store.Bucket[task.Task](sdb, DbBucketName)
 		if dbErr != nil {
-			_ = sdb.Close()
-			return nil, fmt.Errorf("opening tasks bucket: %w", dbErr)
+			return nil, errors.Join(fmt.Errorf("opening tasks bucket: %w", dbErr), sdb.Close())
 		}
 		logDb, dbErr = store.Bucket[task.TaskLogs](sdb, DbLogBucketName)
 		if dbErr != nil {
-			_ = sdb.Close()
-			return nil, fmt.Errorf("opening logs bucket: %w", dbErr)
+			return nil, errors.Join(fmt.Errorf("opening logs bucket: %w", dbErr), sdb.Close())
 		}
 		boltDb = sdb
 	default:
