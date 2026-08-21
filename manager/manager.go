@@ -461,10 +461,6 @@ func (m *Manager) deleteTask(t task.Task) error {
 	return nil
 }
 
-func (m *Manager) pendingLen() int {
-	return m.pending.Len()
-}
-
 func (m *Manager) dequeuePending() (task.TaskEvent, bool) {
 	return m.pending.Dequeue()
 }
