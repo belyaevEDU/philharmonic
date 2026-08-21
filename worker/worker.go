@@ -157,25 +157,16 @@ func (w *Worker) getTask(id uuid.UUID) (task.Task, bool) {
 	return *persisted, true
 }
 
-func (w *Worker) getTaskByName(name string) (t task.Task, found bool, ambiguous bool) {
-	var match task.Task
-	count := 0
-	for _, t := range w.getTasks() {
-		if t.Name == name {
-			match = *t
-			count++
+// resolves a UUID or name to a task via the shared task.ResolveRef
+func (w *Worker) resolveTask(ref string) (t task.Task, found bool, ambiguous bool) {
+	persisted := w.getTasks()
+	tasks := make([]task.Task, 0, len(persisted))
+	for _, p := range persisted {
+		if p != nil {
+			tasks = append(tasks, *p)
 		}
 	}
-	return match, count == 1, count > 1
-}
-
-// resolves a UUID or name to a task
-func (w *Worker) resolveTask(ref string) (t task.Task, found bool, ambiguous bool) {
-	if tID, err := uuid.Parse(ref); err == nil {
-		t, found := w.getTask(tID)
-		return t, found, false
-	}
-	return w.getTaskByName(ref)
+	return task.ResolveRef(tasks, ref)
 }
 
 func (w *Worker) captureLogs(t task.Task, exitCode *int, source string) {

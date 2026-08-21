@@ -3,9 +3,9 @@ package manager
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/belyaevedu/philharmonic/auth"
@@ -83,28 +83,17 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var taskToStop task.Task
-	var found bool
-
-	if tID, err := uuid.Parse(taskID); err == nil {
-		taskToStop, found = a.Manager.getTask(tID)
-		if !found {
-			log.Printf("No task with ID %v found\n", tID)
+	taskToStop, found, ambiguous := a.Manager.resolveTask(taskID)
+	switch {
+	case ambiguous:
+		msg := fmt.Sprintf("multiple tasks named %q exist; stop by task UUID instead", taskID)
+		responseErr := handlers.HttpResponseHelper(w, msg, http.StatusConflict)
+		if responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
 		}
-	} else {
-		var ambiguous bool
-		taskToStop, found, ambiguous = a.Manager.getTaskByName(taskID)
-		switch {
-		case ambiguous:
-			msg := fmt.Sprintf("multiple tasks named %q exist; stop by task UUID instead", taskID)
-			responseErr := handlers.HttpResponseHelper(w, msg, http.StatusConflict)
-			if responseErr != nil {
-				log.Printf(handlers.ErrorEncodingJson, responseErr)
-			}
-			return
-		case !found:
-			log.Printf("No task with ID or name %q found\n", taskID)
-		}
+		return
+	case !found:
+		log.Printf("No task with ID or name %q found\n", taskID)
 	}
 
 	if !found {
@@ -198,7 +187,7 @@ func (a *Api) GetTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tail := r.URL.Query().Get("tail")
-	resp, err := a.Manager.fetchTaskLogsFromWorker(worker, t.ID, tail)
+	wresp, err := a.Manager.fetchTaskLogsFromWorker(worker, t.ID, tail)
 	if err != nil {
 		msg := fmt.Sprintf("Error fetching logs from worker %s: %v\n", worker, err)
 		if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusBadGateway); responseErr != nil {
@@ -206,22 +195,17 @@ func (a *Api) GetTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			log.Printf("Error closing logs response body: %v\n", err)
-		}
-	}()
 
-	switch resp.StatusCode {
+	switch wresp.StatusCode {
 	case http.StatusOK:
 		// relay the worker's text body and metadata headers
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Header().Set("X-Task-State", resp.Header.Get("X-Task-State"))
-		if ec := resp.Header.Get("X-Exit-Code"); ec != "" {
+		w.Header().Set("X-Task-State", wresp.Header.Get("X-Task-State"))
+		if ec := wresp.Header.Get("X-Exit-Code"); ec != "" {
 			w.Header().Set("X-Exit-Code", ec)
 		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.Copy(w, resp.Body)
+		_, _ = w.Write(wresp.Body)
 	case http.StatusNotFound:
 		// container gone and no stored logs, so empty 200 with just the state
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -229,20 +213,8 @@ func (a *Api) GetTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	default:
 		// worker returned an error status, surface it as 502
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			msg := fmt.Sprintf("worker %s returned status %d fetching logs, couldn't read resp body: %s",
-				worker, resp.StatusCode, err)
-			if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusBadGateway); responseErr != nil {
-				log.Printf(handlers.ErrorEncodingJson, responseErr)
-			}
-		}
 		msg := fmt.Sprintf("worker %s returned status %d fetching logs: %s",
-			worker, resp.StatusCode, handlers.HTTPResponse{}.Message)
-		if len(body) > 0 {
-			msg = fmt.Sprintf("worker %s returned status %d fetching logs: %s",
-				worker, resp.StatusCode, string(body))
-		}
+			worker, wresp.StatusCode, strings.TrimSpace(string(wresp.Body)))
 		if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusBadGateway); responseErr != nil {
 			log.Printf(handlers.ErrorEncodingJson, responseErr)
 		}
