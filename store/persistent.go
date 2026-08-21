@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -42,8 +43,7 @@ func NewBoltStore[T any](file string, mode os.FileMode, bucket string) (*BoltSto
 	}
 
 	if err := s.CreateBucket(); err != nil {
-		_ = db.Close()
-		return nil, err
+		return nil, errors.Join(err, db.Close())
 	}
 
 	return s, nil
