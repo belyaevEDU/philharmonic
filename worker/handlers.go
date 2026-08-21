@@ -156,6 +156,8 @@ func (a *Api) GetTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	if len(result.Logs) > 0 {
-		_, _ = w.Write(result.Logs)
+		if _, err := w.Write(result.Logs); err != nil {
+			log.Printf("Error writing task logs body to client: %v\n", err)
+		}
 	}
 }
