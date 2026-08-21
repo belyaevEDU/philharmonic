@@ -146,7 +146,7 @@ func (a *Api) GetTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tail := parseTail(r)
+	tail := handlers.ParseTail(r)
 	result := a.Worker.GetTaskLogs(t, tail)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -158,18 +158,4 @@ func (a *Api) GetTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
 	if len(result.Logs) > 0 {
 		_, _ = w.Write(result.Logs)
 	}
-}
-
-// extracts the ?tail= query param as a line count
-// <= 0 or absent means "all lines"
-func parseTail(r *http.Request) int {
-	raw := r.URL.Query().Get("tail")
-	if raw == "" {
-		return 0
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 0 {
-		return 0
-	}
-	return n
 }

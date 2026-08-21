@@ -186,7 +186,7 @@ func (a *Api) GetTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tail := r.URL.Query().Get("tail")
+	tail := handlers.ParseTail(r)
 	wresp, err := a.Manager.fetchTaskLogsFromWorker(worker, t.ID, tail)
 	if err != nil {
 		msg := fmt.Sprintf("Error fetching logs from worker %s: %v\n", worker, err)

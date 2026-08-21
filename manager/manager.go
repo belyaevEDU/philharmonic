@@ -697,14 +697,14 @@ type WorkerLogsResponse struct {
 }
 
 // proxies a logs request to the owning worker
-func (m *Manager) fetchTaskLogsFromWorker(worker string, taskID uuid.UUID, tail string) (*WorkerLogsResponse, error) {
+func (m *Manager) fetchTaskLogsFromWorker(worker string, taskID uuid.UUID, tail int) (*WorkerLogsResponse, error) {
 	path := "/tasks/logs/" + taskID.String()
-	if tail != "" {
-		path += "?tail=" + tail
+	if tail > 0 {
+		path += "?tail=" + strconv.Itoa(tail)
 	}
 	url := httpclient.WorkerURL(worker, path)
-	// ignoring gosec's G107 since the url is not from external input, but from an internal config
-	resp, err := httpclient.Worker().Get(url) // #nosec G107
+	// ignoring gosec's G107/G704: no request-controlled input reaches this URL
+	resp, err := httpclient.Worker().Get(url) // #nosec G107 G704
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to worker: %w", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 )
 
 const (
@@ -42,4 +43,17 @@ func HttpResponseHelper(w http.ResponseWriter, message string, statusCode int) e
 	}
 
 	return nil
+}
+
+// extracts the ?tail= query param as a line count
+func ParseTail(r *http.Request) int {
+	raw := r.URL.Query().Get("tail")
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
