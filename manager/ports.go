@@ -1,13 +1,9 @@
 package manager
 
 import (
-	"strconv"
-	"strings"
-
 	"github.com/belyaevedu/philharmonic/node"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/belyaevedu/philharmonic/worker"
-	"github.com/google/uuid"
 )
 
 func hasPinnedHostPorts(t *task.Task) bool {
@@ -20,13 +16,6 @@ func hasPinnedHostPorts(t *task.Task) bool {
 		}
 	}
 	return false
-}
-
-func protoPortKey(proto string, port int) string {
-	if proto == "" {
-		proto = "tcp"
-	}
-	return strings.ToLower(proto) + ":" + strconv.Itoa(port)
 }
 
 func (m *Manager) canHost(t *task.Task, occ *worker.OccupiedPorts, excludeOwnPorts bool) bool {
@@ -66,69 +55,4 @@ func (m *Manager) canHost(t *task.Task, occ *worker.OccupiedPorts, excludeOwnPor
 
 func (m *Manager) fetchWorkerPorts(n *node.Node) (*worker.OccupiedPorts, error) {
 	return n.GetPorts()
-}
-
-func requestedPortKeys(t *task.Task) []string {
-	if t == nil {
-		return nil
-	}
-	keys := make([]string, 0, len(t.Ports))
-	for _, pm := range t.Ports {
-		if pm.HostPort != 0 {
-			keys = append(keys, protoPortKey(string(pm.Protocol), pm.HostPort))
-		}
-	}
-	return keys
-}
-
-func (m *Manager) portReservationConflictLocked(workerAddress string, t *task.Task, allowOwn bool) bool {
-	reservations := m.portReservations[workerAddress]
-	for _, key := range requestedPortKeys(t) {
-		if owner, exists := reservations[key]; exists && (owner != t.ID || !allowOwn) {
-			return true
-		}
-	}
-	return false
-}
-
-func (m *Manager) reservePortsLocked(workerAddress string, t *task.Task) {
-	keys := requestedPortKeys(t)
-	if len(keys) == 0 {
-		return
-	}
-	if m.portReservations == nil {
-		m.portReservations = make(map[string]map[string]uuid.UUID)
-	}
-	reservations := m.portReservations[workerAddress]
-	if reservations == nil {
-		reservations = make(map[string]uuid.UUID)
-		m.portReservations[workerAddress] = reservations
-	}
-	for _, key := range keys {
-		reservations[key] = t.ID
-	}
-}
-
-func (m *Manager) reservePorts(workerAddress string, t *task.Task) bool {
-	m.portMu.Lock()
-	defer m.portMu.Unlock()
-	if m.portReservationConflictLocked(workerAddress, t, true) {
-		return false
-	}
-	m.reservePortsLocked(workerAddress, t)
-	return true
-}
-
-func (m *Manager) releasePorts(workerAddress string, t *task.Task) {
-	m.portMu.Lock()
-	defer m.portMu.Unlock()
-	reservations := m.portReservations[workerAddress]
-	for _, key := range requestedPortKeys(t) {
-		if owner, exists := reservations[key]; exists && owner == t.ID {
-			delete(reservations, key)
-		}
-	}
-	if len(reservations) == 0 {
-		delete(m.portReservations, workerAddress)
-	}
 }
