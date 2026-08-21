@@ -1325,19 +1325,22 @@ func (m *Manager) startChecker(ctx context.Context, t task.Task) {
 	// (root cancel) tears down all running checkers, not just the ones
 	// reconcileCheckers stops
 	ctx, cancel := context.WithCancel(ctx)
-	if !m.checkers.start(t.ID, cancel) {
+	h := &checkerHandle{cancel: cancel}
+	if !m.checkers.start(t.ID, h) {
 		// a checker is already running; drop the fresh ctx to avoid a leak
 		cancel()
 		return
 	}
-	go m.runChecker(ctx, t)
+	go m.runChecker(ctx, t, h)
 }
 
 func (m *Manager) stopChecker(id uuid.UUID) {
 	m.checkers.stop(id)
 }
 
-func (m *Manager) runChecker(ctx context.Context, t task.Task) {
+func (m *Manager) runChecker(ctx context.Context, t task.Task, h *checkerHandle) {
+	defer m.checkers.finished(t.ID, h)
+
 	hc := t.HealthCheck.Normalized()
 
 	w := m.taskWorker(t.ID)
