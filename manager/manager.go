@@ -315,6 +315,15 @@ func (m *Manager) getTaskByName(name string) (task.Task, bool, bool) {
 	return match, count == 1, count > 1
 }
 
+// resolves a ref (UUID or name) to a task
+func (m *Manager) resolveTask(ref string) (task.Task, bool, bool) {
+	if tID, err := uuid.Parse(ref); err == nil {
+		t, found := m.getTask(tID)
+		return t, found, false
+	}
+	return m.getTaskByName(ref)
+}
+
 // deleteTask removes a task record from the store and cleans up its pending,
 // ownership, and port-reservation entries
 func (m *Manager) deleteTask(t task.Task) error {
@@ -693,6 +702,20 @@ func (m *Manager) fetchTasksFromWorker(worker string) ([]*task.Task, error) {
 		return nil, fmt.Errorf("error unmarshalling tasks: %w", err)
 	}
 	return tasks, nil
+}
+
+func (m *Manager) fetchTaskLogsFromWorker(worker string, taskID uuid.UUID, tail string) (*http.Response, error) {
+	path := "/tasks/logs/" + taskID.String()
+	if tail != "" {
+		path += "?tail=" + tail
+	}
+	url := httpclient.WorkerURL(worker, path)
+	// ignoring gosec's G107 since the url is not from external input, but from an internal config
+	resp, err := httpclient.Worker().Get(url) // #nosec G107
+	if err != nil {
+		return nil, fmt.Errorf("error connecting to worker: %w", err)
+	}
+	return resp, nil
 }
 
 func (m *Manager) updateTasks() {
