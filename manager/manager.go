@@ -31,6 +31,8 @@ const (
 	WorkerRole = "worker"
 
 	DbFilemode = os.FileMode(0600)
+
+	maxProxyLogSize = 5 << 20 // 5 MiB
 )
 
 var (
@@ -303,16 +305,9 @@ func (m *Manager) taskNameInUseLocked(name string) bool {
 	return false
 }
 
-func (m *Manager) getTaskByName(name string) (task.Task, bool, bool) {
-	var match task.Task
-	count := 0
-	for _, t := range m.getTasks() {
-		if t.Name == name {
-			match = t
-			count++
-		}
-	}
-	return match, count == 1, count > 1
+// resolves a ref (UUID or name) to a task via the shared task.ResolveRef
+func (m *Manager) resolveTask(ref string) (task.Task, bool, bool) {
+	return task.ResolveRef(m.getTasks(), ref)
 }
 
 // deleteTask removes a task record from the store and cleans up its pending,
@@ -693,6 +688,37 @@ func (m *Manager) fetchTasksFromWorker(worker string) ([]*task.Task, error) {
 		return nil, fmt.Errorf("error unmarshalling tasks: %w", err)
 	}
 	return tasks, nil
+}
+
+type WorkerLogsResponse struct {
+	StatusCode int
+	Header     http.Header
+	Body       []byte
+}
+
+// proxies a logs request to the owning worker
+func (m *Manager) fetchTaskLogsFromWorker(worker string, taskID uuid.UUID, tail int) (*WorkerLogsResponse, error) {
+	path := "/tasks/logs/" + taskID.String()
+	if tail > 0 {
+		path += "?tail=" + strconv.Itoa(tail)
+	}
+	url := httpclient.WorkerURL(worker, path)
+	// ignoring gosec's G107/G704: no request-controlled input reaches this URL
+	resp, err := httpclient.Worker().Get(url) // #nosec G107 G704
+	if err != nil {
+		return nil, fmt.Errorf("error connecting to worker: %w", err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Error closing logs response body from worker %s: %v\n", worker, err)
+		}
+	}()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProxyLogSize))
+	if err != nil {
+		return nil, fmt.Errorf("error reading logs response body from worker %s: %w", worker, err)
+	}
+	return &WorkerLogsResponse{StatusCode: resp.StatusCode, Header: resp.Header, Body: body}, nil
 }
 
 func (m *Manager) updateTasks() {

@@ -1,6 +1,7 @@
 package task
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -103,6 +104,20 @@ type Task struct {
 
 func (t Task) Key() uuid.UUID { // store.Keyable impl
 	return t.ID
+}
+
+// captured snapshot of a task's container output,
+// stored on the worker so logs survive container removal
+type TaskLogs struct {
+	TaskID     uuid.UUID
+	ExitCode   *int   // nil if still running/unknown
+	Logs       []byte // demultiplexed stdout+stderr, bounded at capture time
+	CapturedAt time.Time
+	Source     string // "exit" | "stop" | "unhealthy"
+}
+
+func (l TaskLogs) Key() uuid.UUID { // store.Keyable impl
+	return l.TaskID
 }
 
 type TaskEvent struct {
@@ -310,6 +325,46 @@ func (d *Docker) Inspect(containerID string) DockerInspectResponse {
 	return DockerInspectResponse{Response: &resp.Container}
 }
 
+// fetches the demultiplexed stdout+stderr of a container into a single buffer
+// a missing container yields (nil, nil) so callers can fall back to stored logs
+// without treating that as an error
+func (d *Docker) Logs(containerID string, tail int) ([]byte, error) {
+	if d.Client == nil {
+		return nil, errors.New("error fetching logs: Docker.Client is nil")
+	}
+	if containerID == "" {
+		return nil, nil
+	}
+
+	opts := client.ContainerLogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+	}
+	if tail > 0 {
+		opts.Tail = strconv.Itoa(tail)
+	}
+
+	ctx := context.Background()
+	out, err := d.Client.ContainerLogs(ctx, containerID, opts)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("error fetching logs for container %s: %w", containerID, err)
+	}
+	defer func() {
+		if err := out.Close(); err != nil {
+			log.Printf("Error closing logs for container %s: %v\n", containerID, err)
+		}
+	}()
+
+	var buf bytes.Buffer
+	if _, err := stdcopy.StdCopy(&buf, &buf, out); err != nil {
+		return nil, fmt.Errorf("error demultiplexing logs for container %s: %w", containerID, err)
+	}
+	return buf.Bytes(), nil
+}
+
 func NewDocker(c *Config) (*Docker, error) {
 	dc, err := client.New(client.FromEnv)
 	if err != nil {
@@ -328,6 +383,7 @@ type DockerResult struct {
 	ContainerID string
 	Action      Action
 	Result      Result
+	ExitCode    *int // container exit code, when known
 	Error       error
 }
 
@@ -473,6 +529,14 @@ func (d *Docker) Stop(id string) DockerResult {
 		}
 	}
 
+	var exitCode *int
+	if resp, inspectErr := d.Client.ContainerInspect(ctx, id, client.ContainerInspectOptions{}); inspectErr == nil {
+		if resp.Container.State != nil {
+			code := resp.Container.State.ExitCode
+			exitCode = &code
+		}
+	}
+
 	// Same thing with ContainerStartResult and ContainerStopResult
 	_, removeErr := d.Client.ContainerRemove(ctx, id, client.ContainerRemoveOptions{
 		RemoveVolumes: true,
@@ -481,7 +545,7 @@ func (d *Docker) Stop(id string) DockerResult {
 	})
 	if removeErr != nil {
 		if errdefs.IsNotFound(removeErr) {
-			return DockerResult{Action: ActionStop, Result: ResultSuccess} // makes sense..
+			return DockerResult{Action: ActionStop, Result: ResultSuccess, ExitCode: exitCode}
 		}
 		log.Printf("Error removing container %s: %v\n", id, removeErr)
 		if stopErr != nil {
@@ -490,5 +554,5 @@ func (d *Docker) Stop(id string) DockerResult {
 		return DockerResult{Error: removeErr}
 	}
 
-	return DockerResult{Action: ActionStop, Result: ResultSuccess, Error: nil}
+	return DockerResult{Action: ActionStop, Result: ResultSuccess, ExitCode: exitCode, Error: nil}
 }

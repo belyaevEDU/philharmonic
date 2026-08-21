@@ -29,6 +29,11 @@ var (
 	DbFilename   = "%s_tasks.db" // %s is substituted with the worker's name
 	DbBucketName = "tasks"
 
+	DbLogFilename   = "%s_logs.db" // %s is substituted with the worker's name
+	DbLogBucketName = "logs"
+
+	LogCaptureMaxLines = 1000
+
 	LoopInterval = 10 * time.Second
 )
 
@@ -36,9 +41,11 @@ type Worker struct {
 	Name  string
 	Queue queue.Queue
 	Db    store.Store[task.Task]
+	LogDb store.Store[task.TaskLogs]
 	Stats *stats.Stats
 
 	dbMu    sync.RWMutex
+	logMu   sync.Mutex
 	queueMu sync.Mutex
 	statsMu sync.RWMutex
 
@@ -50,13 +57,24 @@ type Worker struct {
 
 func New(name, dbType string) (*Worker, error) {
 	var db store.Store[task.Task]
+	var logDb store.Store[task.TaskLogs]
 	var err error
 	switch dbType {
 	case store.MemoryType:
 		db = store.NewInMemoryStore[task.Task]()
+		logDb = store.NewInMemoryStore[task.TaskLogs]()
 	case store.BoltType:
 		filename := fmt.Sprintf(DbFilename, name)
 		db, err = store.NewBoltStore[task.Task](filename, DbFilemode, DbBucketName)
+		if err != nil {
+			return nil, fmt.Errorf("opening tasks db: %w", err)
+		}
+		logFilename := fmt.Sprintf(DbLogFilename, name)
+		logDb, err = store.NewBoltStore[task.TaskLogs](logFilename, DbFilemode, DbLogBucketName)
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("opening logs db: %w", err)
+		}
 	default:
 		return nil, fmt.Errorf("unknown db type %q", dbType)
 	}
@@ -69,18 +87,23 @@ func New(name, dbType string) (*Worker, error) {
 		Name:  name,
 		Queue: *queue.New(),
 		Db:    db,
+		LogDb: logDb,
 	}, nil
 }
 
 func (w *Worker) Close() error {
 	w.dbMu.Lock()
 	defer w.dbMu.Unlock()
-	if w.Db == nil {
-		return nil
+	var errs []error
+	if w.Db != nil {
+		errs = append(errs, w.Db.Close())
+		w.Db = nil
 	}
-	err := w.Db.Close()
-	w.Db = nil
-	return err
+	if w.LogDb != nil {
+		errs = append(errs, w.LogDb.Close())
+		w.LogDb = nil
+	}
+	return errors.Join(errs...)
 }
 
 func (w *Worker) listTasks() ([]*task.Task, error) {
@@ -132,6 +155,154 @@ func (w *Worker) getTask(id uuid.UUID) (task.Task, bool) {
 		return task.Task{}, false
 	}
 	return *persisted, true
+}
+
+// resolves a UUID or name to a task via the shared task.ResolveRef
+func (w *Worker) resolveTask(ref string) (t task.Task, found bool, ambiguous bool) {
+	persisted := w.getTasks()
+	tasks := make([]task.Task, 0, len(persisted))
+	for _, p := range persisted {
+		if p != nil {
+			tasks = append(tasks, *p)
+		}
+	}
+	return task.ResolveRef(tasks, ref)
+}
+
+func (w *Worker) captureLogs(t task.Task, exitCode *int, source string) {
+	if t.ContainerID == "" {
+		return
+	}
+
+	// don't rewrite an existing record: the first capture wins
+	if _, exists := w.peekStoredLogs(t.ID); exists {
+		return
+	}
+
+	config := task.NewConfig(&t)
+	d, err := task.NewDocker(config)
+	if err != nil {
+		log.Printf("Error creating docker client to capture logs for task %s: %v\n", t.ID, err)
+		return
+	}
+
+	logs, err := d.Logs(t.ContainerID, LogCaptureMaxLines)
+	if err != nil {
+		log.Printf("Error capturing logs for task %s: %v\n", t.ID, err)
+		return
+	}
+
+	w.storeLogsIfAbsent(t.ID, logs, exitCode, source)
+}
+
+func (w *Worker) peekStoredLogs(id uuid.UUID) (task.TaskLogs, bool) {
+	w.logMu.Lock()
+	defer w.logMu.Unlock()
+	if w.LogDb == nil {
+		return task.TaskLogs{}, false
+	}
+	rec, err := w.LogDb.Get(id)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			log.Printf("Error checking stored logs for task %s: %v\n", id, err)
+		}
+		return task.TaskLogs{}, false
+	}
+	return *rec, true
+}
+
+func (w *Worker) storeLogsIfAbsent(id uuid.UUID, logs []byte, exitCode *int, source string) {
+	w.logMu.Lock()
+	defer w.logMu.Unlock()
+	if w.LogDb == nil {
+		return
+	}
+	if existing, err := w.LogDb.Get(id); err == nil && existing != nil {
+		return
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		log.Printf("Error checking stored logs for task %s: %v\n", id, err)
+		return
+	}
+	rec := task.TaskLogs{
+		TaskID:     id,
+		ExitCode:   exitCode,
+		Logs:       logs,
+		CapturedAt: time.Now().UTC(),
+		Source:     source,
+	}
+	if err := w.LogDb.Put(id, &rec); err != nil {
+		log.Printf("Error storing captured logs for task %s: %v\n", id, err)
+	}
+}
+
+func (w *Worker) getStoredLogs(id uuid.UUID) (task.TaskLogs, bool) {
+	w.logMu.Lock()
+	defer w.logMu.Unlock()
+	if w.LogDb == nil {
+		return task.TaskLogs{}, false
+	}
+	rec, err := w.LogDb.Get(id)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			log.Printf("Error getting stored logs for task %s: %v\n", id, err)
+		}
+		return task.TaskLogs{}, false
+	}
+	return *rec, true
+}
+
+// called on restart so new container's lifecycle starts with a fresh capture
+func (w *Worker) clearStoredLogs(id uuid.UUID) {
+	w.logMu.Lock()
+	defer w.logMu.Unlock()
+	if w.LogDb == nil {
+		return
+	}
+	if err := w.LogDb.Delete(id); err != nil {
+		log.Printf("Error clearing stored logs for task %s: %v\n", id, err)
+	}
+}
+
+type TaskLogsResult struct {
+	Logs     []byte
+	State    task.State
+	ExitCode *int
+	Live     bool // true = logs came from a live/exited container, false = from LogDb
+}
+
+func (w *Worker) GetTaskLogs(t task.Task, tail int) TaskLogsResult {
+	if t.ContainerID != "" {
+		config := task.NewConfig(&t)
+		d, err := task.NewDocker(config)
+		if err == nil {
+			resp := d.Inspect(t.ContainerID)
+			if resp.Error == nil && resp.Response != nil {
+				logs, logErr := d.Logs(t.ContainerID, tail)
+				if logErr == nil {
+					var exitCode *int
+					if resp.Response.State != nil {
+						code := resp.Response.State.ExitCode
+						exitCode = &code
+					}
+					return TaskLogsResult{Logs: logs, State: t.State, ExitCode: exitCode, Live: true}
+				}
+				// logs failed for a reason other than NotFound -> fall through
+				// to stored logs rather than returning an error
+			}
+			// container gone -> fall through to stored logs
+		}
+	}
+
+	if rec, ok := w.getStoredLogs(t.ID); ok {
+		return TaskLogsResult{
+			Logs:     tailLines(rec.Logs, tail),
+			State:    t.State,
+			ExitCode: rec.ExitCode,
+			Live:     false,
+		}
+	}
+
+	return TaskLogsResult{Logs: nil, State: t.State, ExitCode: nil, Live: false}
 }
 
 func (w *Worker) setTask(t task.Task) {
@@ -281,6 +452,10 @@ func (w *Worker) runTask() task.DockerResult {
 func (w *Worker) StartTask(t task.Task) task.DockerResult {
 	if t.RestartCount > 0 || t.ContainerID != "" {
 		log.Printf("Restarting task %s (attempt %d)\n", t.ID, t.RestartCount)
+		// a restart begins a new container lifecycle:
+		// drop the previous lifecycle's captured logs
+		// so they aren't served as the new one's
+		w.clearStoredLogs(t.ID)
 	} else {
 		log.Printf("Starting task %s\n", t.ID)
 	}
@@ -356,6 +531,9 @@ func (w *Worker) StopTask(t task.Task) task.DockerResult {
 		return task.DockerResult{Error: err}
 	}
 
+	// grab the container's output while it still exists
+	logs, _ := d.Logs(t.ContainerID, LogCaptureMaxLines)
+
 	result := d.Stop(t.ContainerID)
 	if result.Error != nil {
 		log.Printf("Error stopping container %v: %v\n", t.ContainerID, result.Error)
@@ -381,6 +559,10 @@ func (w *Worker) StopTask(t task.Task) task.DockerResult {
 	}
 
 	w.setTask(t)
+
+	if logs != nil {
+		w.storeLogsIfAbsent(t.ID, logs, result.ExitCode, "stop")
+	}
 
 	if result.Error == nil {
 		log.Printf("Stopped and removed container %v for task %v\n", t.ContainerID, t.ID)
@@ -557,6 +739,12 @@ func (w *Worker) updateTasks() {
 		}
 
 		updated.HostPorts = nil
+		var (
+			captureTask   task.Task
+			captureExit   *int
+			captureSource string
+			shouldCapture bool
+		)
 		if resp.Response.State.Status == container.StateExited {
 			log.Printf(
 				"Container for task %s in non-running state %s",
@@ -564,10 +752,16 @@ func (w *Worker) updateTasks() {
 			)
 			updated.State = task.Failed
 			updated.FailureReason = fmt.Sprintf("container exited with code %d", resp.Response.State.ExitCode)
+			code := resp.Response.State.ExitCode
+			captureExit = &code
+			captureSource = "exit"
+			shouldCapture = true
 		} else if resp.Response.State.Health != nil && resp.Response.State.Health.Status == container.Unhealthy {
 			log.Printf("Container for task %s is unhealthy", runningTask.ID)
 			updated.State = task.Failed
 			updated.FailureReason = healthCheckFailureReason(resp.Response.State.Health)
+			captureSource = "unhealthy"
+			shouldCapture = true
 		}
 
 		if resp.Response.NetworkSettings != nil {
@@ -576,7 +770,14 @@ func (w *Worker) updateTasks() {
 		if err := w.Db.Put(runningTask.ID, &updated); err != nil {
 			log.Printf("error storing task %s: %v\n", runningTask.ID, err)
 		}
+		if shouldCapture {
+			captureTask = updated
+		}
 		w.dbMu.Unlock()
+
+		if shouldCapture {
+			w.captureLogs(captureTask, captureExit, captureSource)
+		}
 	}
 }
 
@@ -726,4 +927,27 @@ func (w *Worker) hostPorts() (OccupiedPorts, error) {
 	sort.Ints(occ.TCP)
 	sort.Ints(occ.UDP)
 	return occ, errors.Join(errs...)
+}
+
+// used to honor the ?tail= query param on stored logs
+func tailLines(blob []byte, n int) []byte {
+	if n <= 0 || len(blob) == 0 {
+		return blob
+	}
+
+	start := 0
+	lines := 0
+	for i := len(blob) - 1; i >= 0; i-- {
+		if blob[i] == '\n' && i+1 < len(blob) {
+			lines++
+			if lines >= n {
+				start = i + 1
+				break
+			}
+		}
+	}
+	if lines < n {
+		return blob
+	}
+	return blob[start:]
 }

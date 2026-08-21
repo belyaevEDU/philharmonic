@@ -99,6 +99,9 @@ type WorkerConfig struct {
 
 	DbFilename         *string `yaml:"db_filename"`
 	DbBucketName       *string `yaml:"db_bucket_name"`
+	DbLogFilename      *string `yaml:"db_logs_filename"`
+	DbLogBucketName    *string `yaml:"db_log_bucket_name"`
+	LogCaptureMaxLines *int    `yaml:"log_capture_max_lines"`
 	LoopInterval       *string `yaml:"loop_interval"`        // duration
 	ApiShutdownTimeout *string `yaml:"api_shutdown_timeout"` // duration
 }
@@ -223,7 +226,7 @@ func applyConfig(cmd *cobra.Command) error {
 				return err
 			}
 		}
-	case "nodes", "run", "status", "stop":
+	case "nodes", "run", "status", "stop", "logs":
 		if cfg.Client != nil {
 			if err := setStr(cmd, "manager", cfg.Client.Manager); err != nil {
 				return err
@@ -287,7 +290,7 @@ func applyRuntimeConfig(cmd *cobra.Command) error {
 			return err
 		}
 		return applyClientRuntime(cfg.Client)
-	case "run", "status", "stop":
+	case "run", "status", "stop", "logs":
 		return applyClientRuntime(cfg.Client)
 	default:
 		return nil
@@ -372,6 +375,24 @@ func applyWorkerRuntime(w *WorkerConfig) error {
 			return err
 		}
 		worker.DbBucketName = *v
+	}
+	if v := w.DbLogFilename; v != nil {
+		if err := validateDbFilename("worker.db_logs_filename", *v); err != nil {
+			return err
+		}
+		worker.DbLogFilename = *v
+	}
+	if v := w.DbLogBucketName; v != nil {
+		if err := validateNonEmpty("worker.db_log_bucket_name", *v); err != nil {
+			return err
+		}
+		worker.DbLogBucketName = *v
+	}
+	if v := w.LogCaptureMaxLines; v != nil {
+		if err := validatePosInt("worker.log_capture_max_lines", *v); err != nil {
+			return err
+		}
+		worker.LogCaptureMaxLines = *v
 	}
 	if v := w.LoopInterval; v != nil {
 		d, err := parsePosDuration("worker.loop_interval", *v)
