@@ -54,7 +54,7 @@ func (q *pendingQueue) removeAll(id uuid.UUID) int {
 	}
 	dropped := len(q.events) - n
 	for i := n; i < len(q.events); i++ {
-		q.events[i] = task.TaskEvent{} // release dropped references for GC
+		q.events[i] = task.TaskEvent{} // release dropped references for gc
 	}
 	q.events = q.events[:n]
 	return dropped
