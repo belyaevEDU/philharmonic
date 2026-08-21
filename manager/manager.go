@@ -20,6 +20,7 @@ import (
 	"github.com/belyaevedu/philharmonic/handlers"
 	"github.com/belyaevedu/philharmonic/httpclient"
 	"github.com/belyaevedu/philharmonic/node"
+	"github.com/belyaevedu/philharmonic/queue"
 	"github.com/belyaevedu/philharmonic/scheduler"
 	"github.com/belyaevedu/philharmonic/store"
 	"github.com/belyaevedu/philharmonic/task"
@@ -47,7 +48,7 @@ var (
 )
 
 type Manager struct {
-	pending      pendingQueue
+	pending      *queue.Queue[task.TaskEvent]
 	TaskDb       store.Store[task.Task]
 	EventDb      store.Store[task.TaskEvent]
 	Assignments  store.Store[Assignment]
@@ -95,6 +96,7 @@ func New(workers []string, schedulerType, dbType string) (*Manager, error) {
 	}
 
 	m := Manager{
+		pending:      queue.New[task.TaskEvent](),
 		Reservations: NewReservationTable(),
 		checkers:     newCheckerSet(),
 		WorkerNodes:  nodes,
@@ -389,7 +391,7 @@ func (m *Manager) AddTask(te task.TaskEvent) error {
 		m.mu.Unlock()
 	}
 
-	m.pending.enqueue(te)
+	m.pending.Enqueue(te)
 	return nil
 }
 
@@ -460,20 +462,22 @@ func (m *Manager) deleteTask(t task.Task) error {
 }
 
 func (m *Manager) pendingLen() int {
-	return m.pending.len()
+	return m.pending.Len()
 }
 
 func (m *Manager) dequeuePending() (task.TaskEvent, bool) {
-	return m.pending.dequeue()
+	return m.pending.Dequeue()
 }
 
 func (m *Manager) enqueuePending(te task.TaskEvent) {
-	m.pending.enqueue(te)
+	m.pending.Enqueue(te)
 }
 
 // drops every queued event for id and reports how many were dropped
 func (m *Manager) removePendingTask(id uuid.UUID) int {
-	return m.pending.removeAll(id)
+	return m.pending.RemoveAllFunc(func(te task.TaskEvent) bool {
+		return te.Task.ID == id
+	})
 }
 
 // all snapshots now to not worry about race conditions
