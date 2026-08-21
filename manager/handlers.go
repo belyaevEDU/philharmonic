@@ -3,6 +3,7 @@ package manager
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -159,5 +160,91 @@ func (a *Api) GetNodesHandler(w http.ResponseWriter, r *http.Request) {
 	err := json.NewEncoder(w).Encode(a.Manager.getNodeViews())
 	if err != nil {
 		log.Printf(handlers.ErrorEncodingJson, err.Error())
+	}
+}
+
+// proxies a logs request to the worker that owns the task
+//
+// {taskID} may be a UUID or a task name
+//
+// the response is text/plain with X-Task-State and X-Exit-Code headers
+func (a *Api) GetTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
+	ref := chi.URLParam(r, "taskID")
+	if ref == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	t, found, ambiguous := a.Manager.resolveTask(ref)
+	switch {
+	case ambiguous:
+		msg := fmt.Sprintf("multiple tasks named %q exist; fetch logs by task UUID instead", ref)
+		if err := handlers.HttpResponseHelper(w, msg, http.StatusConflict); err != nil {
+			log.Printf(handlers.ErrorEncodingJson, err)
+		}
+		return
+	case !found:
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	worker := a.Manager.taskWorker(t.ID)
+	if worker == "" {
+		// task never reached a worker
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Task-State", t.State.String())
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	tail := r.URL.Query().Get("tail")
+	resp, err := a.Manager.fetchTaskLogsFromWorker(worker, t.ID, tail)
+	if err != nil {
+		msg := fmt.Sprintf("Error fetching logs from worker %s: %v\n", worker, err)
+		if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusBadGateway); responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
+		}
+		return
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Error closing logs response body: %v\n", err)
+		}
+	}()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		// relay the worker's text body and metadata headers
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Task-State", resp.Header.Get("X-Task-State"))
+		if ec := resp.Header.Get("X-Exit-Code"); ec != "" {
+			w.Header().Set("X-Exit-Code", ec)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, resp.Body)
+	case http.StatusNotFound:
+		// container gone and no stored logs, so empty 200 with just the state
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Task-State", t.State.String())
+		w.WriteHeader(http.StatusOK)
+	default:
+		// worker returned an error status, surface it as 502
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			msg := fmt.Sprintf("worker %s returned status %d fetching logs, couldn't read resp body: %s",
+				worker, resp.StatusCode, err)
+			if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusBadGateway); responseErr != nil {
+				log.Printf(handlers.ErrorEncodingJson, responseErr)
+			}
+		}
+		msg := fmt.Sprintf("worker %s returned status %d fetching logs: %s",
+			worker, resp.StatusCode, handlers.HTTPResponse{}.Message)
+		if len(body) > 0 {
+			msg = fmt.Sprintf("worker %s returned status %d fetching logs: %s",
+				worker, resp.StatusCode, string(body))
+		}
+		if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusBadGateway); responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
+		}
 	}
 }
