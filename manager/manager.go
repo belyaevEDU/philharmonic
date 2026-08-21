@@ -391,7 +391,7 @@ func (m *Manager) AddTask(te task.TaskEvent) error {
 		m.mu.Unlock()
 	}
 
-	m.pending.Enqueue(te)
+	m.enqueuePending(te)
 	return nil
 }
 
