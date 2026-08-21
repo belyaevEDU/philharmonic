@@ -139,6 +139,17 @@ worker:
   # bbolt bucket name for the worker task store
   db_bucket_name: "tasks"
 
+  # bbolt file name format for the captured-logs store (dbtype: bolt)
+  # must contain exactly one %s, which is substituted with the worker name
+  db_logs_filename: "%s_logs.db"
+
+  # bbolt bucket name for the captured-logs store
+  db_log_bucket_name: "logs"
+
+  # maximum number of lines captured into the logs store when a container
+  # exits, is stopped, or is declared unhealthy (> 0)
+  log_capture_max_lines: 1000
+
   # interval between RunTasks / CollectStats / UpdateTasks loops (> 0)
   loop_interval: "10s"
 
