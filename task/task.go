@@ -37,6 +37,36 @@ type PortMapping struct {
 	Protocol      network.IPProtocol
 }
 
+// restart policies a task can declare
+const (
+	RestartPolicyNone          = "no"
+	RestartPolicyAlways        = "always"
+	RestartPolicyOnFailure     = "on-failure"
+	RestartPolicyUnlessStopped = "unless-stopped"
+)
+
+// accepts an empty policy, defaults to on-failure
+func ValidateRestartPolicy(p string) error {
+	switch p {
+	case "", RestartPolicyNone, RestartPolicyAlways, RestartPolicyOnFailure, RestartPolicyUnlessStopped:
+		return nil
+	}
+	return fmt.Errorf(
+		"invalid restart policy %q: want %q, %q, %q, %q or empty",
+		p, RestartPolicyNone, RestartPolicyAlways, RestartPolicyOnFailure, RestartPolicyUnlessStopped,
+	)
+}
+
+// reports whether a Failed task with this policy
+// may be restarted by the orchestrator
+func ShouldRestart(policy string) bool {
+	switch policy {
+	case "", RestartPolicyOnFailure, RestartPolicyAlways, RestartPolicyUnlessStopped:
+		return true
+	}
+	return false
+}
+
 type HealthCheckType string
 
 const (
@@ -100,6 +130,7 @@ type Task struct {
 	FailureReason string `json:",omitempty"`
 	StartTime     time.Time
 	FinishTime    time.Time
+	Timeout       int64 // max seconds a task may run before the worker kills it, 0 = unlimited
 }
 
 func (t Task) Key() uuid.UUID { // store.Keyable impl
@@ -389,23 +420,34 @@ type DockerResult struct {
 
 func (d *Docker) Run() DockerResult {
 	ctx := context.Background()
-	reader, err := d.Client.ImagePull(ctx, d.Config.Image, client.ImagePullOptions{})
-	if err != nil {
-		log.Printf("Error pulling image %s: %v\n", d.Config.Image, err)
+
+	// pull only when the image isn't already present on this worker
+	if _, err := d.Client.ImageInspect(ctx, d.Config.Image); err == nil {
+		log.Printf("Image %s already exists locally; skipping pull\n", d.Config.Image)
+	} else if errdefs.IsNotFound(err) {
+		log.Printf("Image %s not found locally; pulling\n", d.Config.Image)
+		reader, err := d.Client.ImagePull(ctx, d.Config.Image, client.ImagePullOptions{})
+		if err != nil {
+			log.Printf("Error pulling image %s: %v\n", d.Config.Image, err)
+			return DockerResult{Error: err}
+		}
+
+		_, err = io.Copy(os.Stdout, reader)
+		if err != nil {
+			log.Printf(
+				"Error copying the reader for ImagePull to stdout for image %s: %v\n",
+				d.Config.Image, err,
+			)
+			return DockerResult{Error: err}
+		}
+	} else {
+		log.Printf("Error inspecting image %s: %v\n", d.Config.Image, err)
 		return DockerResult{Error: err}
 	}
 
-	_, err = io.Copy(os.Stdout, reader)
-	if err != nil {
-		log.Printf(
-			"Error copying the reader for ImagePull to stdout for image %s: %v\n",
-			d.Config.Image, err,
-		)
-		return DockerResult{Error: err}
-	}
-
+	// the orchestrator manages the restart policy itself
 	rp := container.RestartPolicy{
-		Name: container.RestartPolicyMode(d.Config.RestartPolicy),
+		Name: container.RestartPolicyDisabled,
 	}
 
 	r := container.Resources{

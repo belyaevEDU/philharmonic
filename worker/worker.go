@@ -323,6 +323,12 @@ func (w *Worker) AddTask(t task.Task) error {
 		if err := task.ValidatePortMappings(t.Ports); err != nil {
 			return err
 		}
+		if err := task.ValidateRestartPolicy(t.RestartPolicy); err != nil {
+			return err
+		}
+		if t.Timeout < 0 {
+			return fmt.Errorf("task timeout must not be negative, got %d", t.Timeout)
+		}
 	}
 
 	if t.State == task.Scheduled {
@@ -461,6 +467,14 @@ func (w *Worker) StartTask(t task.Task) task.DockerResult {
 	}
 
 	if err := task.ValidatePortMappings(t.Ports); err != nil {
+		t.State = task.Failed
+		t.HostPorts = nil
+		t.FailureReason = err.Error()
+		w.setTask(t)
+		return task.DockerResult{Error: err}
+	}
+
+	if err := task.ValidateRestartPolicy(t.RestartPolicy); err != nil {
 		t.State = task.Failed
 		t.HostPorts = nil
 		t.FailureReason = err.Error()
@@ -688,6 +702,11 @@ func (w *Worker) updateTasks() {
 	}
 
 	for _, runningTask := range runningTasks {
+		if taskTimedOut(runningTask) {
+			w.timeoutTask(runningTask)
+			continue
+		}
+
 		resp := w.InspectTask(runningTask)
 		if resp.Error != nil {
 			log.Printf("error updating task %s: %v\n", runningTask.ID, resp.Error)
@@ -746,16 +765,23 @@ func (w *Worker) updateTasks() {
 			shouldCapture bool
 		)
 		if resp.Response.State.Status == container.StateExited {
-			log.Printf(
-				"Container for task %s in non-running state %s",
-				runningTask.ID, resp.Response.State.Status,
-			)
-			updated.State = task.Failed
-			updated.FailureReason = fmt.Sprintf("container exited with code %d", resp.Response.State.ExitCode)
 			code := resp.Response.State.ExitCode
 			captureExit = &code
 			captureSource = "exit"
 			shouldCapture = true
+			if code == 0 {
+				log.Printf("Container for task %s exited successfully (code 0)", runningTask.ID)
+				updated.State = task.Completed
+				updated.FinishTime = time.Now().UTC()
+				updated.FailureReason = ""
+			} else {
+				log.Printf(
+					"Container for task %s in non-running state %s",
+					runningTask.ID, resp.Response.State.Status,
+				)
+				updated.State = task.Failed
+				updated.FailureReason = fmt.Sprintf("container exited with code %d", code)
+			}
 		} else if resp.Response.State.Health != nil && resp.Response.State.Health.Status == container.Unhealthy {
 			log.Printf("Container for task %s is unhealthy", runningTask.ID)
 			updated.State = task.Failed
@@ -778,6 +804,58 @@ func (w *Worker) updateTasks() {
 		if shouldCapture {
 			w.captureLogs(captureTask, captureExit, captureSource)
 		}
+	}
+}
+
+func taskTimedOut(t task.Task) bool {
+	if t.Timeout <= 0 || t.StartTime.IsZero() {
+		return false
+	}
+	return time.Since(t.StartTime) > time.Duration(t.Timeout)*time.Second
+}
+
+func (w *Worker) timeoutTask(t task.Task) {
+	log.Printf("Task %s exceeded its timeout of %ds; stopping container %s\n", t.ID, t.Timeout, t.ContainerID)
+
+	if t.ContainerID != "" {
+		config := task.NewConfig(&t)
+		if d, err := task.NewDocker(config); err == nil {
+			logs, _ := d.Logs(t.ContainerID, LogCaptureMaxLines)
+			if result := d.Stop(t.ContainerID); result.Error != nil {
+				log.Printf("Error stopping timed out container %s for task %s: %v\n", t.ContainerID, t.ID, result.Error)
+			}
+			if logs != nil {
+				w.storeLogsIfAbsent(t.ID, logs, nil, "timeout")
+			}
+		} else {
+			log.Printf("Error creating docker client to stop timed out task %s: %v\n", t.ID, err)
+		}
+	}
+
+	w.dbMu.Lock()
+	defer w.dbMu.Unlock()
+
+	if w.Db == nil {
+		return
+	}
+	persisted, err := w.Db.Get(t.ID)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			log.Printf("error getting timed out task %s: %v\n", t.ID, err)
+		}
+		return
+	}
+	if persisted.State != task.Running {
+		// a stop or restart raced the timeout, its outcome wins
+		return
+	}
+	updated := *persisted
+	updated.State = task.Failed
+	updated.FailureReason = fmt.Sprintf("task timed out after %d seconds", t.Timeout)
+	updated.FinishTime = time.Now().UTC()
+	updated.HostPorts = nil
+	if err := w.Db.Put(updated.ID, &updated); err != nil {
+		log.Printf("error storing timed out task %s: %v\n", updated.ID, err)
 	}
 }
 

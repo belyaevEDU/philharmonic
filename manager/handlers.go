@@ -39,6 +39,19 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		if err := task.ValidateRestartPolicy(te.Task.RestartPolicy); err != nil {
+			if responseErr := handlers.HttpResponseHelper(w, err.Error(), http.StatusBadRequest); responseErr != nil {
+				log.Printf(handlers.ErrorEncodingJson, responseErr)
+			}
+			return
+		}
+		if te.Task.Timeout < 0 {
+			msg := fmt.Sprintf("task timeout must not be negative, got %d", te.Task.Timeout)
+			if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusBadRequest); responseErr != nil {
+				log.Printf(handlers.ErrorEncodingJson, responseErr)
+			}
+			return
+		}
 		if te.Task.ID == uuid.Nil {
 			te.Task.ID = uuid.New()
 		}
