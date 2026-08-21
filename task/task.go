@@ -45,7 +45,7 @@ const (
 	RestartPolicyUnlessStopped = "unless-stopped"
 )
 
-// ValidateRestartPolicy accepts an empty policy, defaults to on-failure
+// accepts an empty policy, defaults to on-failure
 func ValidateRestartPolicy(p string) error {
 	switch p {
 	case "", RestartPolicyNone, RestartPolicyAlways, RestartPolicyOnFailure, RestartPolicyUnlessStopped:
