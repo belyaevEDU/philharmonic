@@ -111,18 +111,15 @@ func New(workers []string, schedulerType, dbType string) (*Manager, error) {
 		}
 		ts, dbErr = store.Bucket[task.Task](sdb, DbTaskBucket)
 		if dbErr != nil {
-			_ = sdb.Close()
-			return nil, fmt.Errorf("opening tasks bucket: %w", dbErr)
+			return nil, errors.Join(fmt.Errorf("opening tasks bucket: %w", dbErr), sdb.Close())
 		}
 		es, dbErr = store.Bucket[task.TaskEvent](sdb, DbEventBucket)
 		if dbErr != nil {
-			_ = sdb.Close()
-			return nil, fmt.Errorf("opening events bucket: %w", dbErr)
+			return nil, errors.Join(fmt.Errorf("opening events bucket: %w", dbErr), sdb.Close())
 		}
 		as, dbErr = store.Bucket[Assignment](sdb, DbAssignmentBucket)
 		if dbErr != nil {
-			_ = sdb.Close()
-			return nil, fmt.Errorf("opening assignments bucket: %w", dbErr)
+			return nil, errors.Join(fmt.Errorf("opening assignments bucket: %w", dbErr), sdb.Close())
 		}
 		m.boltDb = sdb
 	default:
@@ -132,29 +129,96 @@ func New(workers []string, schedulerType, dbType string) (*Manager, error) {
 	m.TaskDb = ts
 	m.EventDb = es
 	m.Assignments = as
-	m.restoreReservations()
+	if err := m.reconcileOnStartup(); err != nil {
+		// the manager must not run with unreconciled state
+		// it would silently double-book host ports or leave accepted tasks to be
+		return nil, errors.Join(fmt.Errorf("startup reconciliation: %w", err), m.Close())
+	}
 	return &m, nil
 }
 
-// reclaims the pinned host ports of non-terminal tasks
-// recovered from TaskDb after a manager restart
-func (m *Manager) restoreReservations() {
+func (m *Manager) reconcileOnStartup() error {
 	persisted, err := m.TaskDb.List()
 	if err != nil {
-		log.Printf("Error listing tasks for reservation restore: %v\n", err)
+		return fmt.Errorf("listing tasks: %w", err)
+	}
+
+	knownTasks := make(map[uuid.UUID]struct{}, len(persisted))
+	var (
+		recoveredRunning int
+		recoveredSched   int
+		requeuedPending  []uuid.UUID
+	)
+	for _, t := range persisted {
+		if t == nil {
+			continue
+		}
+		knownTasks[t.ID] = struct{}{}
+
+		switch t.State {
+		case task.Pending:
+			m.enqueuePending(task.TaskEvent{
+				ID:        uuid.New(),
+				State:     task.Scheduled,
+				Timestamp: time.Now().UTC(),
+				Task:      *t,
+			})
+			requeuedPending = append(requeuedPending, t.ID)
+
+		case task.Running, task.Scheduled:
+			owner := m.assignmentLocked(t.ID)
+			if owner == "" {
+				log.Printf("Recovered %s task %s has no recorded worker; it will be placed by the normal scheduling flows\n", t.State, t.ID)
+				continue
+			}
+			if t.State == task.Running {
+				recoveredRunning++
+			} else {
+				recoveredSched++
+			}
+			if m.workerByAddress(owner) == nil {
+				log.Printf("Recovered %s task %s points at unconfigured worker %q; dispatch will retry until the worker joins or the task is stopped\n", t.State, t.ID, owner)
+			}
+			if hasPinnedHostPorts(t) && !m.Reservations.TryReserve(owner, t) {
+				log.Printf("Conflicting restored port reservations for recovered task %s on %s; deferring to the workers' live port inventories\n", t.ID, owner)
+			}
+		}
+	}
+
+	if n := len(requeuedPending); n > 0 {
+		log.Printf("Requeued %d task(s) that were accepted but not yet dispatched before the restart\n", n)
+	}
+	if recoveredRunning+recoveredSched > 0 {
+		log.Printf("Recovered %d running and %d scheduled task(s) from the previous run\n", recoveredRunning, recoveredSched)
+	}
+
+	sweepOrphanedAssignments(m.Assignments, knownTasks)
+	return nil
+}
+
+// sweeps assignments whose task record is gone
+// a crash between the task delete and the assignment delete in deleteTask leaves the assignment behind
+func sweepOrphanedAssignments(assignmentsStore store.Store[Assignment], knownTasks map[uuid.UUID]struct{}) {
+	if assignmentsStore == nil {
 		return
 	}
-	for _, t := range persisted {
-		if t == nil || (t.State != task.Scheduled && t.State != task.Running) || !hasPinnedHostPorts(t) {
+	assignments, err := assignmentsStore.List()
+	if err != nil {
+		log.Printf("Could not list assignments for the startup orphan sweep; orphans (if any) remain: %v\n", err)
+		return
+	}
+	for _, a := range assignments {
+		if a == nil {
 			continue
 		}
-		owner := m.assignmentLocked(t.ID)
-		if owner == "" {
+		if _, ok := knownTasks[a.TaskID]; ok {
 			continue
 		}
-		if !m.Reservations.TryReserve(owner, t) {
-			log.Printf("Conflicting restored reservations for task %s on %s; leaving to worker inventory\n", t.ID, owner)
+		if err := assignmentsStore.Delete(a.TaskID); err != nil {
+			log.Printf("Could not delete orphaned assignment for missing task %s (worker %q); it remains and will be re-swept on the next restart: %v\n", a.TaskID, a.Worker, err)
+			continue
 		}
+		log.Printf("Swept orphaned assignment for missing task %s (worker %q)\n", a.TaskID, a.Worker)
 	}
 }
 
