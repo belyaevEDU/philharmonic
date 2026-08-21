@@ -52,6 +52,13 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		if te.Task.MaxRestarts < 0 {
+			msg := fmt.Sprintf("task max_restarts must not be negative, got %d", te.Task.MaxRestarts)
+			if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusBadRequest); responseErr != nil {
+				log.Printf(handlers.ErrorEncodingJson, responseErr)
+			}
+			return
+		}
 		if te.Task.ID == uuid.Nil {
 			te.Task.ID = uuid.New()
 		}
@@ -117,9 +124,9 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 	// stopping a Pending task cancels its queued start and removes it from the
 	// db; it has not reached a worker yet, so there is no owner to stop.
 	// Completed tasks are also cleaned up. A Failed task is cleaned up only
-	// after it has reached the restart cap
+	// after it has reached its restart cap
 	if taskToStop.State == task.Pending || taskToStop.State == task.Completed ||
-		(taskToStop.State == task.Failed && taskToStop.RestartCount >= MaxRestarts) {
+		(taskToStop.State == task.Failed && taskToStop.RestartCount >= taskToStop.EffectiveMaxRestarts(MaxRestarts)) {
 		if err := a.Manager.deleteTask(taskToStop); err != nil {
 			msg := fmt.Sprintf("Error deleting task %s: %v\n", taskToStop.ID, err)
 			responseErr := handlers.HttpResponseHelper(w, msg, http.StatusInternalServerError)
