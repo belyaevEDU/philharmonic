@@ -746,16 +746,23 @@ func (w *Worker) updateTasks() {
 			shouldCapture bool
 		)
 		if resp.Response.State.Status == container.StateExited {
-			log.Printf(
-				"Container for task %s in non-running state %s",
-				runningTask.ID, resp.Response.State.Status,
-			)
-			updated.State = task.Failed
-			updated.FailureReason = fmt.Sprintf("container exited with code %d", resp.Response.State.ExitCode)
 			code := resp.Response.State.ExitCode
 			captureExit = &code
 			captureSource = "exit"
 			shouldCapture = true
+			if code == 0 {
+				log.Printf("Container for task %s exited successfully (code 0)", runningTask.ID)
+				updated.State = task.Completed
+				updated.FinishTime = time.Now().UTC()
+				updated.FailureReason = ""
+			} else {
+				log.Printf(
+					"Container for task %s in non-running state %s",
+					runningTask.ID, resp.Response.State.Status,
+				)
+				updated.State = task.Failed
+				updated.FailureReason = fmt.Sprintf("container exited with code %d", code)
+			}
 		} else if resp.Response.State.Health != nil && resp.Response.State.Health.Status == container.Unhealthy {
 			log.Printf("Container for task %s is unhealthy", runningTask.ID)
 			updated.State = task.Failed
