@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/belyaevedu/philharmonic/handlers"
 	"github.com/belyaevedu/philharmonic/task"
@@ -123,4 +124,52 @@ func (a *Api) GetPortsHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(ports); err != nil {
 		log.Printf(handlers.ErrorEncodingJson, err)
 	}
+}
+
+func (a *Api) GetTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
+	ref := chi.URLParam(r, "taskID")
+	if ref == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	t, found, ambiguous := a.Worker.resolveTask(ref)
+	switch {
+	case ambiguous:
+		msg := fmt.Sprintf("multiple tasks named %q exist; fetch logs by task UUID instead", ref)
+		if err := handlers.HttpResponseHelper(w, msg, http.StatusConflict); err != nil {
+			log.Printf(handlers.ErrorEncodingJson, err)
+		}
+		return
+	case !found:
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	tail := parseTail(r)
+	result := a.Worker.GetTaskLogs(t, tail)
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Task-State", t.State.String())
+	if result.ExitCode != nil {
+		w.Header().Set("X-Exit-Code", strconv.Itoa(*result.ExitCode))
+	}
+	w.WriteHeader(http.StatusOK)
+	if len(result.Logs) > 0 {
+		_, _ = w.Write(result.Logs)
+	}
+}
+
+// extracts the ?tail= query param as a line count
+// <= 0 or absent means "all lines"
+func parseTail(r *http.Request) int {
+	raw := r.URL.Query().Get("tail")
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
