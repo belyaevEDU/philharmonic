@@ -275,18 +275,21 @@ func (w *Worker) GetTaskLogs(t task.Task, tail int) TaskLogsResult {
 		config := task.NewConfig(&t)
 		d, err := task.NewDocker(config)
 		if err == nil {
-			logs, logErr := d.Logs(t.ContainerID, tail)
-			if logErr == nil {
-				resp := d.Inspect(t.ContainerID)
-				var exitCode *int
-				if resp.Error == nil && resp.Response != nil && resp.Response.State != nil {
-					code := resp.Response.State.ExitCode
-					exitCode = &code
+			resp := d.Inspect(t.ContainerID)
+			if resp.Error == nil && resp.Response != nil {
+				logs, logErr := d.Logs(t.ContainerID, tail)
+				if logErr == nil {
+					var exitCode *int
+					if resp.Response.State != nil {
+						code := resp.Response.State.ExitCode
+						exitCode = &code
+					}
+					return TaskLogsResult{Logs: logs, State: t.State, ExitCode: exitCode, Live: true}
 				}
-				return TaskLogsResult{Logs: logs, State: t.State, ExitCode: exitCode, Live: true}
+				// logs failed for a reason other than NotFound -> fall through
+				// to stored logs rather than returning an error
 			}
-			// inspect/logs failed for a reason other than NotFound -> fall through
-			// to stored logs rather than returning an error
+			// container gone -> fall through to stored logs
 		}
 	}
 
