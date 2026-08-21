@@ -329,6 +329,9 @@ func (w *Worker) AddTask(t task.Task) error {
 		if t.Timeout < 0 {
 			return fmt.Errorf("task timeout must not be negative, got %d", t.Timeout)
 		}
+		if t.MaxRestarts < 0 {
+			return fmt.Errorf("task max_restarts must not be negative, got %d", t.MaxRestarts)
+		}
 	}
 
 	if t.State == task.Scheduled {

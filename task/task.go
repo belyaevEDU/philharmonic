@@ -67,6 +67,13 @@ func ShouldRestart(policy string) bool {
 	return false
 }
 
+func (t Task) EffectiveMaxRestarts(defaultMaxRestarts int) int {
+	if t.MaxRestarts > 0 {
+		return t.MaxRestarts
+	}
+	return defaultMaxRestarts
+}
+
 type HealthCheckType string
 
 const (
@@ -127,6 +134,7 @@ type Task struct {
 	HostPorts     []PortMapping // resolved bindings reported by the daemon
 	HealthCheck   *HealthCheck
 	RestartCount  int
+	MaxRestarts   int    // per-task restart cap; 0 = fall back to manager.MaxRestarts
 	FailureReason string `json:",omitempty"`
 	StartTime     time.Time
 	FinishTime    time.Time

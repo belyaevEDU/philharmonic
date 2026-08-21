@@ -244,6 +244,9 @@ func (m *Manager) AddTask(te task.TaskEvent) error {
 		if te.Task.Timeout < 0 {
 			return fmt.Errorf("task timeout must not be negative, got %d", te.Task.Timeout)
 		}
+		if te.Task.MaxRestarts < 0 {
+			return fmt.Errorf("task max_restarts must not be negative, got %d", te.Task.MaxRestarts)
+		}
 		m.mu.Lock()
 		if m.TaskDb == nil {
 			m.mu.Unlock()
@@ -1190,7 +1193,8 @@ func (m *Manager) restartFailedTasks() {
 			continue
 		}
 
-		if t.RestartCount < MaxRestarts {
+		restartCap := t.EffectiveMaxRestarts(MaxRestarts)
+		if t.RestartCount < restartCap {
 			err := m.restartTask(t)
 			if err != nil {
 				log.Printf("Error restarting task %s: %v", t.ID, err)
@@ -1201,9 +1205,9 @@ func (m *Manager) restartFailedTasks() {
 		if t.FinishTime.IsZero() {
 			reason := t.FailureReason
 			if reason == "" {
-				reason = fmt.Sprintf("restart cap (%d) reached", MaxRestarts)
+				reason = fmt.Sprintf("restart cap (%d) reached", restartCap)
 			}
-			log.Printf("Task %s reached the restart cap (%d); marking failed and stopping its container\n", t.ID, MaxRestarts)
+			log.Printf("Task %s reached its restart cap (%d); marking failed and stopping its container\n", t.ID, restartCap)
 			m.stopTaskTerminal(t, reason)
 		}
 	}
@@ -1271,7 +1275,7 @@ func (m *Manager) runChecker(ctx context.Context, t task.Task) {
 				continue
 			}
 
-			if t.RestartCount >= MaxRestarts {
+			if t.RestartCount >= t.EffectiveMaxRestarts(MaxRestarts) {
 				reason := fmt.Sprintf("health check failed after all restarts & retries. last error: %v", err)
 				log.Printf("Task %s: %s; marking failed and stopping its container\n", t.ID, reason)
 				m.stopTaskTerminal(t, reason)
