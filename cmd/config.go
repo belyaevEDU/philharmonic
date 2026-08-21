@@ -81,8 +81,7 @@ type ManagerConfig struct {
 	TLS       *TLSFileConfig     `yaml:"tls"`
 	Auth      *ManagerAuthConfig `yaml:"auth"`
 
-	DbTasksFile        *string `yaml:"db_tasks_file"`
-	DbEventsFile       *string `yaml:"db_events_file"`
+	DbFile             *string `yaml:"db_file"`
 	DbTaskBucket       *string `yaml:"db_task_bucket"`
 	DbEventBucket      *string `yaml:"db_event_bucket"`
 	MaxRestarts        *int    `yaml:"max_restarts"`
@@ -99,7 +98,6 @@ type WorkerConfig struct {
 
 	DbFilename         *string `yaml:"db_filename"`
 	DbBucketName       *string `yaml:"db_bucket_name"`
-	DbLogFilename      *string `yaml:"db_logs_filename"`
 	DbLogBucketName    *string `yaml:"db_log_bucket_name"`
 	LogCaptureMaxLines *int    `yaml:"log_capture_max_lines"`
 	LoopInterval       *string `yaml:"loop_interval"`        // duration
@@ -313,17 +311,11 @@ func applyManagerRuntime(m *ManagerConfig) error {
 	if m == nil {
 		return nil
 	}
-	if v := m.DbTasksFile; v != nil {
-		if err := validateNonEmpty("manager.db_tasks_file", *v); err != nil {
+	if v := m.DbFile; v != nil {
+		if err := validateNonEmpty("manager.db_file", *v); err != nil {
 			return err
 		}
-		manager.DbTasksFile = *v
-	}
-	if v := m.DbEventsFile; v != nil {
-		if err := validateNonEmpty("manager.db_events_file", *v); err != nil {
-			return err
-		}
-		manager.DbEventsFile = *v
+		manager.DbFile = *v
 	}
 	if v := m.DbTaskBucket; v != nil {
 		if err := validateNonEmpty("manager.db_task_bucket", *v); err != nil {
@@ -375,12 +367,6 @@ func applyWorkerRuntime(w *WorkerConfig) error {
 			return err
 		}
 		worker.DbBucketName = *v
-	}
-	if v := w.DbLogFilename; v != nil {
-		if err := validateDbFilename("worker.db_logs_filename", *v); err != nil {
-			return err
-		}
-		worker.DbLogFilename = *v
 	}
 	if v := w.DbLogBucketName; v != nil {
 		if err := validateNonEmpty("worker.db_log_bucket_name", *v); err != nil {
