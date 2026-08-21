@@ -74,9 +74,9 @@ manager:
 
   ## runtime tunables (only used by "philharmonic manager")
 
-  # bbolt file paths for the tasks and events stores (dbtype: bolt)
-  db_tasks_file: "tasks.db"
-  db_events_file: "events.db"
+  # bbolt file for all manager stores (dbtype: bolt)
+  # each store gets its own bucket inside the single file
+  db_file: "philharmonic.db"
 
   # bbolt bucket names for the tasks and events stores
   db_task_bucket: "tasks"
@@ -132,16 +132,13 @@ worker:
 
   ## runtime tunables (only used by "philharmonic worker")
 
-  # bbolt file name format for the task store
+  # bbolt file name format for all worker stores.
+  # tasks and captured logs live in separate buckets of this one file.
   # must contain exactly one %s, which is substituted with the worker name
-  db_filename: "%s_tasks.db"
+  db_filename: "%s.db"
 
   # bbolt bucket name for the worker task store
   db_bucket_name: "tasks"
-
-  # bbolt file name format for the captured-logs store (dbtype: bolt)
-  # must contain exactly one %s, which is substituted with the worker name
-  db_logs_filename: "%s_logs.db"
 
   # bbolt bucket name for the captured-logs store
   db_log_bucket_name: "logs"

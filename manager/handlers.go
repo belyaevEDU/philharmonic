@@ -225,7 +225,9 @@ func (a *Api) GetTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Exit-Code", ec)
 		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(wresp.Body)
+		if _, err := w.Write(wresp.Body); err != nil {
+			log.Printf("Error writing proxied task logs body to client: %v\n", err)
+		}
 	case http.StatusNotFound:
 		// container gone and no stored logs, so empty 200 with just the state
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")

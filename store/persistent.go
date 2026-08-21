@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -21,6 +22,11 @@ type BoltStore[T any] struct {
 	DbFile   string
 	FileMode os.FileMode
 	Bucket   string
+
+	// shared marks views created by Bucket over a SharedBolt.
+	// if so, the store does not own the file handle
+	// and Close is a no-op and the SharedBolt closes it
+	shared bool
 }
 
 func NewBoltStore[T any](file string, mode os.FileMode, bucket string) (*BoltStore[T], error) {
@@ -37,14 +43,58 @@ func NewBoltStore[T any](file string, mode os.FileMode, bucket string) (*BoltSto
 	}
 
 	if err := s.CreateBucket(); err != nil {
-		_ = db.Close()
-		return nil, err
+		return nil, errors.Join(err, db.Close())
 	}
 
 	return s, nil
 }
 
+// owns a single bbolt file backing several bucket views.
+// bbolt takes an exclusive lock on the file,
+// so a component's stores must all come from one open handle.
+// SharedBolt acts as that handle, and Bucket hands out
+// Store[T] views over its buckets
+type SharedBolt struct {
+	Db     *bolt.DB
+	DbFile string
+}
+
+func OpenSharedBolt(file string, mode os.FileMode) (*SharedBolt, error) {
+	db, err := bolt.Open(file, mode, &bolt.Options{Timeout: boltOpenTimeout})
+	if err != nil {
+		return nil, fmt.Errorf("unable to open %s: %w", file, err)
+	}
+	return &SharedBolt{Db: db, DbFile: file}, nil
+}
+
+func Bucket[T any](s *SharedBolt, bucket string) (*BoltStore[T], error) {
+	err := s.Db.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists([]byte(bucket))
+		if err != nil {
+			return fmt.Errorf("create bucket %s: %w", bucket, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &BoltStore[T]{
+		Db:     s.Db,
+		DbFile: s.DbFile,
+		Bucket: bucket,
+		shared: true,
+	}, nil
+}
+
+func (s *SharedBolt) Close() error {
+	return s.Db.Close()
+}
+
 func (s *BoltStore[T]) Close() error {
+	if s.shared {
+		// the owning SharedBolt closes the file
+		return nil
+	}
 	return s.Db.Close()
 }
 

@@ -12,11 +12,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/belyaevedu/philharmonic/queue"
 	"github.com/belyaevedu/philharmonic/stats"
 	"github.com/belyaevedu/philharmonic/store"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/cakturk/go-netstat/netstat"
-	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
 )
@@ -26,10 +26,8 @@ const (
 )
 
 var (
-	DbFilename   = "%s_tasks.db" // %s is substituted with the worker's name
-	DbBucketName = "tasks"
-
-	DbLogFilename   = "%s_logs.db" // %s is substituted with the worker's name
+	DbFilename      = "%s.db" // %s is substituted with the worker's name
+	DbBucketName    = "tasks"
 	DbLogBucketName = "logs"
 
 	LogCaptureMaxLines = 1000
@@ -39,14 +37,18 @@ var (
 
 type Worker struct {
 	Name  string
-	Queue queue.Queue
+	Queue *queue.Queue[task.Task]
 	Db    store.Store[task.Task]
 	LogDb store.Store[task.TaskLogs]
 	Stats *stats.Stats
 
+	// owns the single bbolt file backing all three stores in bolt mode.
+	// is nil for memory mode
+	// the stores themselves are bucket views on it
+	boltDb *store.SharedBolt
+
 	dbMu    sync.RWMutex
 	logMu   sync.Mutex
-	queueMu sync.Mutex
 	statsMu sync.RWMutex
 
 	// CPU usage is a rate, so it needs two samples of the cumulative /proc/stat counters
@@ -58,52 +60,50 @@ type Worker struct {
 func New(name, dbType string) (*Worker, error) {
 	var db store.Store[task.Task]
 	var logDb store.Store[task.TaskLogs]
-	var err error
+	var boltDb *store.SharedBolt
 	switch dbType {
 	case store.MemoryType:
 		db = store.NewInMemoryStore[task.Task]()
 		logDb = store.NewInMemoryStore[task.TaskLogs]()
 	case store.BoltType:
-		filename := fmt.Sprintf(DbFilename, name)
-		db, err = store.NewBoltStore[task.Task](filename, DbFilemode, DbBucketName)
-		if err != nil {
-			return nil, fmt.Errorf("opening tasks db: %w", err)
+		sdb, dbErr := store.OpenSharedBolt(fmt.Sprintf(DbFilename, name), DbFilemode)
+		if dbErr != nil {
+			return nil, fmt.Errorf("opening worker db: %w", dbErr)
 		}
-		logFilename := fmt.Sprintf(DbLogFilename, name)
-		logDb, err = store.NewBoltStore[task.TaskLogs](logFilename, DbFilemode, DbLogBucketName)
-		if err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("opening logs db: %w", err)
+		db, dbErr = store.Bucket[task.Task](sdb, DbBucketName)
+		if dbErr != nil {
+			return nil, errors.Join(fmt.Errorf("opening tasks bucket: %w", dbErr), sdb.Close())
 		}
+		logDb, dbErr = store.Bucket[task.TaskLogs](sdb, DbLogBucketName)
+		if dbErr != nil {
+			return nil, errors.Join(fmt.Errorf("opening logs bucket: %w", dbErr), sdb.Close())
+		}
+		boltDb = sdb
 	default:
 		return nil, fmt.Errorf("unknown db type %q", dbType)
 	}
 
-	if err != nil {
-		return nil, err
-	}
-
 	return &Worker{
-		Name:  name,
-		Queue: *queue.New(),
-		Db:    db,
-		LogDb: logDb,
+		Name:   name,
+		Queue:  queue.New[task.Task](),
+		Db:     db,
+		LogDb:  logDb,
+		boltDb: boltDb,
 	}, nil
 }
 
 func (w *Worker) Close() error {
 	w.dbMu.Lock()
 	defer w.dbMu.Unlock()
-	var errs []error
-	if w.Db != nil {
-		errs = append(errs, w.Db.Close())
-		w.Db = nil
+
+	w.Db = nil
+	w.LogDb = nil
+	var err error
+	if w.boltDb != nil {
+		err = w.boltDb.Close()
+		w.boltDb = nil
 	}
-	if w.LogDb != nil {
-		errs = append(errs, w.LogDb.Close())
-		w.LogDb = nil
-	}
-	return errors.Join(errs...)
+	return err
 }
 
 func (w *Worker) listTasks() ([]*task.Task, error) {
@@ -359,39 +359,20 @@ func (w *Worker) AddTask(t task.Task) error {
 		w.dbMu.Unlock()
 	}
 
-	w.queueMu.Lock()
 	w.Queue.Enqueue(t)
-	w.queueMu.Unlock()
 	return nil
 }
 
 func (w *Worker) queueLen() int {
-	w.queueMu.Lock()
-	defer w.queueMu.Unlock()
 	return w.Queue.Len()
-}
-
-func (w *Worker) dequeueTask() any {
-	w.queueMu.Lock()
-	defer w.queueMu.Unlock()
-	return w.Queue.Dequeue()
 }
 
 // action is picked depending on the task's state
 func (w *Worker) runTask() task.DockerResult {
-	t := w.dequeueTask()
-	if t == nil {
+	taskQueued, ok := w.Queue.Dequeue()
+	if !ok {
 		log.Println("No tasks in the queue")
 		return task.DockerResult{Error: nil}
-	}
-
-	taskQueued, ok := t.(task.Task)
-	if !ok {
-		return task.DockerResult{
-			Error: errors.New(
-				"error pulling a task off the queue: somehow there's a non-task.Task element",
-			),
-		}
 	}
 
 	w.dbMu.Lock()
