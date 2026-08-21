@@ -20,9 +20,9 @@ var workerCmd = &cobra.Command{
 
 The worker runs tasks via Docker and responds to manager's requests about task states.
 
-When --name is empty the worker defaults to the host's hostname. With
---dbtype bolt the task DB filename is derived from the name (<name>_tasks.db
-by default), so the name and the DB file are coupled.`,
+When --name is empty the worker defaults to the host's hostname.
+With --dbtype bolt the DB filename is derived from the name (<name>.db by default), so the name and the DB file are coupled.`,
+
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		host, err := cmd.Flags().GetString("host")
