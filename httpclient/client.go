@@ -27,6 +27,9 @@ import (
 // overridden by client config if specified
 var ClientTimeout = 10 * time.Second
 
+// bounds long-running operations against worker apis, such as image pulls
+var LongOpTimeout = 15 * time.Minute
+
 // zero value = plan http, no config
 type Options struct {
 	// enables HTTPS, nil keeps plain HTTP
@@ -79,14 +82,14 @@ func (rc *roleClient) reset() {
 	rc.mu.Unlock()
 }
 
-func (rc *roleClient) client() *http.Client {
+func (rc *roleClient) client(timeout time.Duration) *http.Client {
 	rc.mu.RLock()
 	tr := rc.transport
 	rc.mu.RUnlock()
 
 	// the transport (and its connection pool) is shared,
 	// so constructing the client itself is cheap
-	return &http.Client{Timeout: ClientTimeout, Transport: tr}
+	return &http.Client{Timeout: timeout, Transport: tr}
 }
 
 func (rc *roleClient) scheme() string {
@@ -119,12 +122,18 @@ func Reset() {
 
 // client for reaching the manager api
 func Manager() *http.Client {
-	return managerClient.client()
+	return managerClient.client(ClientTimeout)
 }
 
 // used by the manager to reach worker apis
 func Worker() *http.Client {
-	return workerClient.client()
+	return workerClient.client(ClientTimeout)
+}
+
+// client for long-running operations against worker apis
+// shares the worker client's TLS/auth transport, but uses LongOpTimeout
+func WorkerLongOp() *http.Client {
+	return workerClient.client(LongOpTimeout)
 }
 
 // no tls no auth
