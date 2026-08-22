@@ -364,6 +364,49 @@ func (d *Docker) Inspect(containerID string) DockerInspectResponse {
 	return DockerInspectResponse{Response: &resp.Container}
 }
 
+// makes sure image exists on the local daemon,
+// pulling it from the registry only when missing
+//
+// it reports whether the image had to be pulled
+//
+// the pull's progress stream is drained rather than printed,
+// callers get a plain success/error
+func (d *Docker) Pull(image string) (bool, error) {
+	ctx := context.Background()
+
+	if _, err := d.Client.ImageInspect(ctx, image); err == nil {
+		log.Printf("Image %s already exists locally; skipping pull\n", image)
+		return false, nil
+	} else if !errdefs.IsNotFound(err) {
+		log.Printf("Error inspecting image %s: %v\n", image, err)
+		return false, fmt.Errorf("inspecting image %s: %w", image, err)
+	}
+
+	log.Printf("Image %s not found locally; pulling\n", image)
+	reader, err := d.Client.ImagePull(ctx, image, client.ImagePullOptions{})
+	if err != nil {
+		log.Printf("Error pulling image %s: %v\n", image, err)
+		return false, fmt.Errorf("pulling image %s: %w", image, err)
+	}
+	defer func() {
+		if err := reader.Close(); err != nil {
+			log.Printf("Error closing the image pull progress stream for %s: %v\n", image, err)
+		}
+	}()
+
+	// the pull isn't complete until EOF
+	if _, err := io.Copy(io.Discard, reader); err != nil {
+		log.Printf(
+			"Error reading the pull progress stream for image %s: %v\n",
+			image, err,
+		)
+		return false, fmt.Errorf("reading pull progress for image %s: %w", image, err)
+	}
+
+	log.Printf("Pulled image %s\n", image)
+	return true, nil
+}
+
 // fetches the demultiplexed stdout+stderr of a container into a single buffer
 // a missing container yields (nil, nil) so callers can fall back to stored logs
 // without treating that as an error
@@ -430,26 +473,7 @@ func (d *Docker) Run() DockerResult {
 	ctx := context.Background()
 
 	// pull only when the image isn't already present on this worker
-	if _, err := d.Client.ImageInspect(ctx, d.Config.Image); err == nil {
-		log.Printf("Image %s already exists locally; skipping pull\n", d.Config.Image)
-	} else if errdefs.IsNotFound(err) {
-		log.Printf("Image %s not found locally; pulling\n", d.Config.Image)
-		reader, err := d.Client.ImagePull(ctx, d.Config.Image, client.ImagePullOptions{})
-		if err != nil {
-			log.Printf("Error pulling image %s: %v\n", d.Config.Image, err)
-			return DockerResult{Error: err}
-		}
-
-		_, err = io.Copy(os.Stdout, reader)
-		if err != nil {
-			log.Printf(
-				"Error copying the reader for ImagePull to stdout for image %s: %v\n",
-				d.Config.Image, err,
-			)
-			return DockerResult{Error: err}
-		}
-	} else {
-		log.Printf("Error inspecting image %s: %v\n", d.Config.Image, err)
+	if _, err := d.Pull(d.Config.Image); err != nil {
 		return DockerResult{Error: err}
 	}
 
