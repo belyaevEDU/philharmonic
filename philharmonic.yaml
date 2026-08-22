@@ -158,6 +158,11 @@ http:
   # timeout for an HTTP client request (> 0)
   client_timeout: "10s"
 
+  # timeout for long-running worker operations, currently image pulls
+  # triggered by the manager's POST /images (> 0).
+  # Pulls routinely outlast client_timeout, hence the separate, larger cap
+  long_op_timeout: "15m"
+
 # Node polling ("philharmonic manager" side, the node package runtime vars)
 node:
   # maximum attempts when querying a worker's /stats (> 0)

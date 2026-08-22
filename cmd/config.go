@@ -43,6 +43,10 @@ type Config struct {
 
 type HTTPConfig struct {
 	ClientTimeout *string `yaml:"client_timeout"` // duration
+
+	// bounds long-running worker operations such as image pulls,
+	// which routinely outlast client_timeout
+	LongOpTimeout *string `yaml:"long_op_timeout"` // duration
 }
 
 // the shared shape of the per-role "tls" config sections
@@ -296,14 +300,23 @@ func applyRuntimeConfig(cmd *cobra.Command) error {
 }
 
 func applyHTTPRuntime(h *HTTPConfig) error {
-	if h == nil || h.ClientTimeout == nil {
+	if h == nil {
 		return nil
 	}
-	d, err := parsePosDuration("http.client_timeout", *h.ClientTimeout)
-	if err != nil {
-		return err
+	if h.ClientTimeout != nil {
+		d, err := parsePosDuration("http.client_timeout", *h.ClientTimeout)
+		if err != nil {
+			return err
+		}
+		httpclient.ClientTimeout = d
 	}
-	httpclient.ClientTimeout = d
+	if h.LongOpTimeout != nil {
+		d, err := parsePosDuration("http.long_op_timeout", *h.LongOpTimeout)
+		if err != nil {
+			return err
+		}
+		httpclient.LongOpTimeout = d
+	}
 	return nil
 }
 
