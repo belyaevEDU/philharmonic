@@ -624,7 +624,7 @@ func (m *Manager) workerByAddress(address string) *node.Node {
 }
 
 // resolves the target list for a cluster-wide image pull.
-// an empty or omitted names list selects every configured worker.
+// an empty, omitted or all-blank names list selects every configured worker.
 // each name must equal a configured worker address.
 // duplicates and blank entries are dropped.
 // returns: the targets, the names matching no configured worker,
@@ -664,6 +664,12 @@ func (m *Manager) resolvePullTargets(names []string) (targets, unknown, known []
 		} else {
 			unknown = append(unknown, name)
 		}
+	}
+
+	// every entry was blank,
+	// so fall back to selecting every configured worker, mirroring an omitted list
+	if len(targets) == 0 && len(unknown) == 0 {
+		return known, nil, known
 	}
 	return targets, unknown, known
 }
