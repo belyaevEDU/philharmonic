@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/belyaevedu/philharmonic/handlers"
 	"github.com/belyaevedu/philharmonic/task"
@@ -122,6 +123,48 @@ func (a *Api) GetPortsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(ports); err != nil {
+		log.Printf(handlers.ErrorEncodingJson, err)
+	}
+}
+
+// pulls the requested image on this worker's docker daemon.
+// the pull is synchronous and can take a while for large images.
+// callers should use a bigger client timeout than default
+func (a *Api) PullImageHandler(w http.ResponseWriter, r *http.Request) {
+	d := json.NewDecoder(r.Body)
+	d.DisallowUnknownFields()
+
+	req := PullImageRequest{}
+	err := d.Decode(&req)
+	if err != nil {
+		msg := fmt.Sprintf(handlers.ErrorUnmarshallingJson, err)
+		if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusBadRequest); responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
+		}
+		return
+	}
+
+	image := strings.TrimSpace(req.Image)
+	if image == "" {
+		msg := "field \"image\" is required"
+		if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusBadRequest); responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
+		}
+		return
+	}
+
+	pulled, err := a.Worker.PullImage(image)
+	if err != nil {
+		msg := fmt.Sprintf("error pulling image %q: %v", image, err)
+		if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusInternalServerError); responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(PullImageResponse{Image: image, Pulled: pulled}); err != nil {
 		log.Printf(handlers.ErrorEncodingJson, err)
 	}
 }
