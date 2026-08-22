@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/belyaevedu/philharmonic/auth"
@@ -169,6 +170,92 @@ func (a *Api) GetNodesHandler(w http.ResponseWriter, r *http.Request) {
 	err := json.NewEncoder(w).Encode(a.Manager.getNodeViews())
 	if err != nil {
 		log.Printf(handlers.ErrorEncodingJson, err.Error())
+	}
+}
+
+// the body of POST /images.
+type PullImagesRequest struct {
+	Image string `json:"image"`
+
+	// workers to pull the image on, addressed by host:port
+	// an empty or omitted list selects every configured worker
+	Workers []string `json:"workers,omitempty"`
+}
+
+type ImagePullResult struct {
+	Worker string `json:"worker"`
+	OK     bool   `json:"ok"`
+	// pulled is false both when the image was already present on the worker
+	// and when the pull failed
+	Pulled bool   `json:"pulled"`
+	Error  string `json:"error,omitempty"`
+}
+
+type ImagePullReport struct {
+	Image   string            `json:"image"`
+	Results []ImagePullResult `json:"results"`
+}
+
+// pulls the requested image on every configured worker,
+// or on the subset named in the body.
+// workers are pulled concurrently, the response always carries a per-worker result,
+// so a partial failure is reported with a 200 and per-worker errors
+func (a *Api) PullImageHandler(w http.ResponseWriter, r *http.Request) {
+	d := json.NewDecoder(r.Body)
+	d.DisallowUnknownFields()
+
+	req := PullImagesRequest{}
+	err := d.Decode(&req)
+	if err != nil {
+		msg := fmt.Sprintf(handlers.ErrorUnmarshallingJson, err)
+		if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusBadRequest); responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
+		}
+		return
+	}
+
+	image := strings.TrimSpace(req.Image)
+	if image == "" {
+		msg := "field \"image\" is required"
+		if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusBadRequest); responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
+		}
+		return
+	}
+
+	targets, unknown, known := a.Manager.resolvePullTargets(req.Workers)
+	if len(unknown) > 0 {
+		msg := fmt.Sprintf(
+			"unknown worker(s): %s; configured worker(s): %s",
+			strings.Join(unknown, ", "), strings.Join(known, ", "),
+		)
+		if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusBadRequest); responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
+		}
+		return
+	}
+
+	results := make([]ImagePullResult, len(targets))
+	var wg sync.WaitGroup
+	for i, workerAddr := range targets {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pulled, err := a.Manager.pullImageOnWorker(workerAddr, image)
+			result := ImagePullResult{Worker: workerAddr, OK: err == nil, Pulled: pulled}
+			if err != nil {
+				result.Error = err.Error()
+				log.Printf("Error pulling image %s on worker %s: %v\n", image, workerAddr, err)
+			}
+			results[i] = result
+		}()
+	}
+	wg.Wait()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(ImagePullReport{Image: image, Results: results}); err != nil {
+		log.Printf(handlers.ErrorEncodingJson, err)
 	}
 }
 

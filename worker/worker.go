@@ -653,6 +653,15 @@ func (w *Worker) InspectTask(t task.Task) task.DockerInspectResponse {
 	return d.Inspect(t.ContainerID)
 }
 
+func (w *Worker) PullImage(image string) (bool, error) {
+	// only the Image field is relevant for a pull
+	d, err := task.NewDocker(&task.Config{Image: image})
+	if err != nil {
+		return false, fmt.Errorf("creating docker client: %w", err)
+	}
+	return d.Pull(image)
+}
+
 func healthCheckFailureReason(health *container.Health) string {
 	if health != nil && len(health.Log) > 0 {
 		last := health.Log[len(health.Log)-1]
@@ -859,6 +868,16 @@ func (w *Worker) UpdateTasks(ctx context.Context) {
 type OccupiedPorts struct {
 	TCP []int `json:"tcp,omitempty"`
 	UDP []int `json:"udp,omitempty"`
+}
+
+// request/response bodies for POST /images (pull an image on this worker)
+type PullImageRequest struct {
+	Image string `json:"image"`
+}
+
+type PullImageResponse struct {
+	Image  string `json:"image"`
+	Pulled bool   `json:"pulled"` // false = the image was already present locally
 }
 
 func (w *Worker) HostPortsWithError() (OccupiedPorts, error) {
