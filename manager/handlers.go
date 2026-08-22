@@ -199,7 +199,7 @@ type ImagePullReport struct {
 // pulls the requested image on every configured worker,
 // or on the subset named in the body.
 // Workers are pulled concurrently; the response always carries a per-worker result,
-// so a partial failure is reported with a 200 and per-worker errors rather
+// so a partial failure is reported with a 200 and per-worker errors
 func (a *Api) PullImageHandler(w http.ResponseWriter, r *http.Request) {
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
