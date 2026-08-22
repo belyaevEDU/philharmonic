@@ -83,6 +83,9 @@ func (a *Api) initRouter() {
 	a.Router.Route("/nodes", func(r chi.Router) {
 		r.Get("/", viewer(a.GetNodesHandler))
 	})
+	a.Router.Route("/images", func(r chi.Router) {
+		r.Post("/", admin(a.PullImageHandler))
+	})
 }
 
 func (a *Api) Start() error {
