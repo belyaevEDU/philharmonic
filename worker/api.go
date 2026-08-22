@@ -52,6 +52,10 @@ func (a *Api) initRouter() {
 	a.Router.Route("/ports", func(r chi.Router) {
 		r.Get("/", a.GetPortsHandler)
 	})
+
+	a.Router.Route("/images", func(r chi.Router) {
+		r.Post("/", a.PullImageHandler)
+	})
 }
 
 func (a *Api) Start() error {
