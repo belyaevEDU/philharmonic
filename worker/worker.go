@@ -25,6 +25,9 @@ const (
 	DbFilemode = os.FileMode(0600)
 )
 
+// ForgetTask refuses tasks whose container may still be alive
+var errTaskStillActive = errors.New("task is still active on this worker")
+
 var (
 	DbFilename      = "%s.db" // %s is substituted with the worker's name
 	DbBucketName    = "tasks"
@@ -571,6 +574,39 @@ func (w *Worker) StopTask(t task.Task) task.DockerResult {
 	return result
 }
 
+// removes a terminal task record and its stored logs from the worker's
+// stores, e.g. after the manager deleted the task. active tasks are refused:
+// their container must be stopped first
+func (w *Worker) ForgetTask(id uuid.UUID) error {
+	w.dbMu.Lock()
+	defer w.dbMu.Unlock()
+
+	if w.Db == nil {
+		return errors.New("worker db is nil")
+	}
+
+	persisted, err := w.Db.Get(id)
+	if err != nil {
+		return err // ErrNotFound propagates to the caller
+	}
+	if persisted.State == task.Scheduled || persisted.State == task.Running {
+		return fmt.Errorf("%w: %s is %s", errTaskStillActive, id, persisted.State)
+	}
+	if err := w.Db.Delete(id); err != nil {
+		return err
+	}
+
+	// lock ordering: dbMu -> logMu. nothing takes them the other way around
+	w.logMu.Lock()
+	defer w.logMu.Unlock()
+	if w.LogDb != nil {
+		if err := w.LogDb.Delete(id); err != nil {
+			log.Printf("Error deleting stored logs for forgotten task %s: %v\n", id, err)
+		}
+	}
+	return nil
+}
+
 func (w *Worker) RunTasks(ctx context.Context) {
 	ticker := time.NewTicker(LoopInterval)
 	defer ticker.Stop()
@@ -845,8 +881,10 @@ func (w *Worker) timeoutTask(t task.Task) {
 	updated := *persisted
 	updated.State = task.Failed
 	updated.FailureReason = fmt.Sprintf("task timed out after %d seconds", t.Timeout)
-	updated.FinishTime = time.Now().UTC()
 	updated.HostPorts = nil
+	// no FinishTime: a timeout is a retryable failure, and Failed +
+	// FinishTime is the manager's terminal stamp; a timed-out task must
+	// stay restartable until it reaches its restart cap
 	if err := w.Db.Put(updated.ID, &updated); err != nil {
 		log.Printf("error storing timed out task %s: %v\n", updated.ID, err)
 	}
