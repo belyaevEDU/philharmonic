@@ -41,6 +41,11 @@ var (
 
 	LoopInterval = 10 * time.Second
 
+	// exponential restart backoff bounds
+	// restart attempt n = base * 2^(n-1), capped at max
+	RestartBackoffBase = 10 * time.Second
+	RestartBackoffMax  = 5 * time.Minute
+
 	DbFile = "philharmonic.db"
 
 	DbTaskBucket       = "tasks"
@@ -247,6 +252,33 @@ func (m *Manager) Close() error {
 	return err
 }
 
+// base * 2^(restartCount-1), capped at RestartBackoffMax
+func restartBackoff(restartCount int) time.Duration {
+	d := RestartBackoffBase
+	for i := 1; i < restartCount && d < RestartBackoffMax; i++ {
+		d *= 2
+	}
+	if d > RestartBackoffMax {
+		return RestartBackoffMax
+	}
+	return d
+}
+
+// marks an infra issue during placement
+var errClusterUnreachable = errors.New("no worker is reachable")
+
+func (m *Manager) clusterUnreachable() bool {
+	for _, n := range m.WorkerNodes {
+		if n == nil {
+			continue
+		}
+		if _, err := n.GetStats(); err == nil {
+			return false
+		}
+	}
+	return true
+}
+
 func (m *Manager) SelectWorker(t *task.Task) (*node.Node, error) {
 	m.Reservations.Lock()
 	defer m.Reservations.Unlock()
@@ -326,6 +358,9 @@ func (m *Manager) selectAndReserveWorker(t *task.Task, owner string) (*node.Node
 
 	selected, err := m.selectWorkerLocked(t, "")
 	if err != nil {
+		if m.clusterUnreachable() {
+			return nil, fmt.Errorf("%w: %v", errClusterUnreachable, err)
+		}
 		return nil, err
 	}
 	// impossible while the table's lock is held and selectWorkerLocked checked
@@ -737,7 +772,12 @@ func (m *Manager) SendWork() {
 			reserved = m.Reservations.TryReserve(w.Address, &t)
 			if !reserved {
 				log.Printf("Cannot reserve host ports for task %s on worker %s\n", t.ID, w.Address)
-				m.markFailed(t.ID, t.RestartCount+1, "host port is reserved by another task")
+				// port contention on the owning worker is transient:
+				// stay retryable without burning a restart slot
+				// restartFailedTasks picks this up after backoff and restartTask re-selects then,
+				// possibly relocating the task to a worker that can host it
+				m.markFailed(t.ID, t.RestartCount,
+					"host ports on the assigned worker are reserved by another task")
 				return
 			}
 		}
@@ -768,8 +808,18 @@ func (m *Manager) SendWork() {
 		var err error
 		w, err = m.selectAndReserveWorker(&t, "")
 		if err != nil {
-			log.Printf("Error selecting worker for task %s: %v\n", t.ID, err)
-			m.enqueuePending(te)
+			if errors.Is(err, errClusterUnreachable) {
+				// total blackout = infra issue, network blip, etc.
+				// keep the task in the pending queue
+				log.Printf("No reachable worker to schedule task %s (%v); requeueing\n", t.ID, err)
+				m.enqueuePending(te)
+				return
+			}
+			// workers are alive but none can host the task
+			// terminally stopping the task and letting the user take further action
+			reason := fmt.Sprintf("no available worker to schedule task: %v", err)
+			log.Printf("Task %s is unschedulable: %v\n", t.ID, err)
+			m.stopTaskTerminal(t, reason)
 			return
 		}
 		reserved = true
@@ -990,6 +1040,10 @@ func (m *Manager) updateTasks() {
 			}
 
 			if t.State == task.Failed {
+				if persisted.State != task.Failed {
+					// first observation
+					updated.NextRetryAt = time.Now().UTC().Add(restartBackoff(updated.RestartCount))
+				}
 				updated.State = task.Failed
 				if t.FailureReason != "" {
 					updated.FailureReason = t.FailureReason
@@ -1071,6 +1125,14 @@ func (m *Manager) restartTask(t task.Task) error {
 
 	w, err := m.selectAndReserveWorker(&next, owner)
 	if err != nil {
+		if errors.Is(err, errClusterUnreachable) {
+			// infra issue, transient
+			reason := fmt.Sprintf("no reachable worker to restart: %v", err)
+			m.markFailed(t.ID, t.RestartCount, reason)
+			return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
+		}
+		// workers are alive but none can host the task
+		// terminally stopping the task and letting the user take further action
 		reason := fmt.Sprintf("no available worker to restart: %v", err)
 		m.stopTaskTerminal(t, reason)
 		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
@@ -1163,9 +1225,10 @@ func (m *Manager) restartTask(t task.Task) error {
 	return nil
 }
 
-// markFailed records a task as Failed with the given restart count and reason
+// records a task as Failed with the given restart count and reason,
 // clearing any prior terminal stamp (FinishTime = 0)
-// so restartFailedTasks can drive the task again
+// and arming the restart backoff window,
+// so restartFailedTasks can start the task again after a pause
 func (m *Manager) markFailed(id uuid.UUID, restartCount int, reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1178,11 +1241,12 @@ func (m *Manager) markFailed(id uuid.UUID, restartCount int, reason string) {
 	persisted, err := m.TaskDb.Get(id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			persisted = &task.Task{ID: id}
+			// the task was deleted concurrently
+			log.Printf("Not marking unknown task %s as failed\n", id)
 		} else {
 			log.Printf("Cannot mark task %s as failed: %v\n", id, err)
-			return
 		}
+		return
 	}
 
 	updated := *persisted
@@ -1190,8 +1254,32 @@ func (m *Manager) markFailed(id uuid.UUID, restartCount int, reason string) {
 	updated.RestartCount = restartCount
 	updated.FailureReason = reason
 	updated.FinishTime = time.Time{}
+	updated.NextRetryAt = time.Now().UTC().Add(restartBackoff(restartCount))
 	if err := m.TaskDb.Put(id, &updated); err != nil {
 		log.Printf("Cannot mark task %s as failed: %v\n", id, err)
+	}
+}
+
+// records that the user stopped the task
+func (m *Manager) markManuallyStopped(id uuid.UUID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.TaskDb == nil {
+		return
+	}
+
+	persisted, err := m.TaskDb.Get(id)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			log.Printf("Cannot record manual stop for task %s: %v\n", id, err)
+		}
+		return
+	}
+	updated := *persisted
+	updated.ManuallyStopped = true
+	if err := m.TaskDb.Put(id, &updated); err != nil {
+		log.Printf("Cannot record manual stop for task %s: %v\n", id, err)
 	}
 }
 
@@ -1377,36 +1465,69 @@ func (m *Manager) reconcileCheckers(ctx context.Context) {
 }
 
 func (m *Manager) restartFailedTasks() {
+	now := time.Now().UTC()
 	for _, t := range m.getTasks() {
-		if t.State != task.Failed {
-			continue
-		}
-
-		if !task.ShouldRestart(t.RestartPolicy) {
-			if t.FinishTime.IsZero() {
-				reason := fmt.Sprintf("restart policy %q does not permit a restart", t.RestartPolicy)
-				log.Printf("Task %s failed and its restart policy forbids a restart; stopping its container\n", t.ID)
-				m.stopTaskTerminal(t, reason)
+		switch t.State {
+		case task.Failed:
+			// the user asked to stop this task; no policy may override that
+			if t.ManuallyStopped {
+				continue
 			}
-			continue
-		}
 
-		restartCap := t.EffectiveMaxRestarts(MaxRestarts)
-		if t.RestartCount < restartCap {
-			err := m.restartTask(t)
-			if err != nil {
+			if !task.ShouldRestart(t.RestartPolicy) {
+				if t.FinishTime.IsZero() {
+					reason := fmt.Sprintf("restart policy %q does not permit a restart", t.RestartPolicy)
+					log.Printf("Task %s failed and its restart policy forbids a restart; stopping its container\n", t.ID)
+					m.stopTaskTerminal(t, reason)
+				}
+				continue
+			}
+
+			restartCap := t.EffectiveMaxRestarts(MaxRestarts)
+			if t.RestartCount >= restartCap {
+				if t.FinishTime.IsZero() {
+					reason := t.FailureReason
+					if reason == "" {
+						reason = fmt.Sprintf("restart cap (%d) reached", restartCap)
+					}
+					log.Printf("Task %s reached its restart cap (%d); marking failed and stopping its container\n", t.ID, restartCap)
+					m.stopTaskTerminal(t, reason)
+				}
+				continue
+			}
+
+			// within the backoff window armed by the last failure. wait it out
+			if now.Before(t.NextRetryAt) {
+				continue
+			}
+
+			if err := m.restartTask(t); err != nil {
 				log.Printf("Error restarting task %s: %v", t.ID, err)
 			}
-			continue
-		}
 
-		if t.FinishTime.IsZero() {
-			reason := t.FailureReason
-			if reason == "" {
-				reason = fmt.Sprintf("restart cap (%d) reached", restartCap)
+		case task.Completed:
+			// a clean exit is only restartable under always/unless-stopped,
+			// and never after a manual stop
+			if t.ManuallyStopped || !task.ShouldRestartOnSuccess(t.RestartPolicy) {
+				continue
 			}
-			log.Printf("Task %s reached its restart cap (%d); marking failed and stopping its container\n", t.ID, restartCap)
-			m.stopTaskTerminal(t, reason)
+
+			restartCap := t.EffectiveMaxRestarts(MaxRestarts)
+			if t.RestartCount >= restartCap {
+				reason := fmt.Sprintf("restart cap (%d) reached after a clean exit", restartCap)
+				log.Printf("Task %s %s; marking failed and stopping its container\n", t.ID, reason)
+				m.stopTaskTerminal(t, reason)
+				continue
+			}
+
+			if now.Before(t.NextRetryAt) {
+				continue
+			}
+
+			log.Printf("Restarting cleanly exited task %s (restart policy %q)\n", t.ID, t.RestartPolicy)
+			if err := m.restartTask(t); err != nil {
+				log.Printf("Error restarting task %s: %v", t.ID, err)
+			}
 		}
 	}
 }
@@ -1488,6 +1609,13 @@ func (m *Manager) runChecker(ctx context.Context, t task.Task, h *checkerHandle)
 				reason := fmt.Sprintf("health check failed (%v) and restart policy %q does not permit a restart", err, t.RestartPolicy)
 				log.Printf("Task %s: %s; marking failed and stopping its container\n", t.ID, reason)
 				m.stopTaskTerminal(t, reason)
+				return
+			}
+
+			if time.Now().UTC().Before(t.NextRetryAt) {
+				// a restart was attempted too recently. wait out the backoff
+				// the task stays Running, so reconcileCheckers starts a fresh checker
+				log.Printf("Task %s is within its restart backoff window; deferring the health-triggered restart\n", t.ID)
 				return
 			}
 
