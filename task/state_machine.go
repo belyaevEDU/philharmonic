@@ -37,8 +37,12 @@ var stateTransitionMap = map[State][]State{
 	Pending:   {Scheduled},
 	Scheduled: {Scheduled, Running, Failed},
 	Running:   {Running, Scheduled, Completed, Failed},
-	Completed: {},
-	Failed:    {Scheduled, Completed},
+
+	// Completed to Scheduled: "always"/"unless-stopped" restart a cleanly exited task
+	// Completed to Completed: a repeated stop stays idempotent
+	Completed: {Scheduled, Completed},
+
+	Failed: {Scheduled, Completed},
 }
 
 func ValidStateTransition(from, to State) bool {
