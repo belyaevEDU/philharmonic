@@ -15,7 +15,7 @@ import (
 
 var workerCmd = &cobra.Command{
 	Use:   "worker",
-	Short: "worker command to operate a Cube worker node.",
+	Short: "worker command to operate a Philharmonic worker node.",
 	Long: `philharmonic worker command.
 
 The worker runs tasks via Docker and responds to manager's requests about task states.
