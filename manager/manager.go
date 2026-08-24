@@ -782,19 +782,18 @@ func (m *Manager) SendWork() {
 			}
 		}
 	} else if isStop {
-		// a stop can overtake a failed/requeued start while the task is still Pending.
-		// there is no worker to contact in that case; cancel the queued start
-		// and remove the task instead of dropping the stop
-		if pending, exists := m.getTask(t.ID); exists && pending.State == task.Pending {
-			if err := m.deleteTask(pending); err != nil {
-				log.Printf("Error deleting pending task %s: %v\n", t.ID, err)
+		// a stop with no owning worker: the record is all there is,
+		// so remove it instead of dropping the stop
+		if existing, exists := m.getTask(t.ID); exists {
+			if err := m.deleteTask(existing); err != nil {
+				log.Printf("Error deleting unowned task %s: %v\n", t.ID, err)
 				m.enqueuePending(te)
 			} else {
-				log.Printf("Cancelled pending task %s\n", t.ID)
+				log.Printf("Deleted unowned task %s\n", t.ID)
 			}
 			return
 		}
-		log.Printf("Cannot stop task %s: no worker owns it\n", t.ID)
+		log.Printf("Cannot stop task %s: no worker owns it and it no longer exists\n", t.ID)
 		return
 	} else {
 		// a cancellation may have removed the task while it was sitting in the
@@ -1014,10 +1013,12 @@ func (m *Manager) updateTasks() {
 			persisted, err := m.TaskDb.Get(t.ID)
 			if err != nil {
 				m.mu.Unlock()
-				if !errors.Is(err, store.ErrNotFound) {
-					log.Printf("Error getting task %s: %v\n", t.ID.String(), err)
+				if errors.Is(err, store.ErrNotFound) {
+					// the manager no longer knows this task (it was deleted), so
+					// the worker's record is an orphan. have the worker drop it
+					m.forgetTaskOnWorker(n.Address, t.ID)
 				} else {
-					log.Printf("Task with ID %s not found\n", t.ID.String())
+					log.Printf("Error getting task %s: %v\n", t.ID.String(), err)
 				}
 				continue
 			}
@@ -1064,6 +1065,33 @@ func (m *Manager) updateTasks() {
 			}
 			m.mu.Unlock()
 		}
+	}
+}
+
+// asks a worker to drop its record of a task the manager no longer knows.
+// retried naturally by updateTasks until the worker confirms
+func (m *Manager) forgetTaskOnWorker(addr string, id uuid.UUID) {
+	url := httpclient.WorkerURL(addr, "/tasks/"+id.String())
+	req, err := http.NewRequest(http.MethodDelete, url, nil) // #nosec G107
+	if err != nil {
+		log.Printf("Error building forget request for task %s on worker %s: %v\n", id, addr, err)
+		return
+	}
+	resp, err := httpclient.Worker().Do(req)
+	if err != nil {
+		log.Printf("Could not ask worker %s to forget task %s: %v\n", addr, id, err)
+		return
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Error closing forget response body from worker %s: %v\n", addr, err)
+		}
+	}()
+	switch resp.StatusCode {
+	case http.StatusNoContent, http.StatusNotFound:
+		// forgotten, or already forgotten
+	default:
+		log.Printf("Worker %s could not forget task %s: status %d\n", addr, id, resp.StatusCode)
 	}
 }
 
@@ -1473,25 +1501,27 @@ func (m *Manager) restartFailedTasks() {
 				continue
 			}
 
+			// a terminal stamp means stopTaskTerminal already ended this task.
+			// retryable failures always carry FinishTime = 0. (markFailed clears it)
+			if !t.FinishTime.IsZero() {
+				continue
+			}
+
 			if !task.ShouldRestart(t.RestartPolicy) {
-				if t.FinishTime.IsZero() {
-					reason := fmt.Sprintf("restart policy %q does not permit a restart", t.RestartPolicy)
-					log.Printf("Task %s failed and its restart policy forbids a restart; stopping its container\n", t.ID)
-					m.stopTaskTerminal(t, reason)
-				}
+				reason := fmt.Sprintf("restart policy %q does not permit a restart", t.RestartPolicy)
+				log.Printf("Task %s failed and its restart policy forbids a restart; stopping its container\n", t.ID)
+				m.stopTaskTerminal(t, reason)
 				continue
 			}
 
 			restartCap := t.EffectiveMaxRestarts(MaxRestarts)
 			if t.RestartCount >= restartCap {
-				if t.FinishTime.IsZero() {
-					reason := t.FailureReason
-					if reason == "" {
-						reason = fmt.Sprintf("restart cap (%d) reached", restartCap)
-					}
-					log.Printf("Task %s reached its restart cap (%d); marking failed and stopping its container\n", t.ID, restartCap)
-					m.stopTaskTerminal(t, reason)
+				reason := t.FailureReason
+				if reason == "" {
+					reason = fmt.Sprintf("restart cap (%d) reached", restartCap)
 				}
+				log.Printf("Task %s reached its restart cap (%d); marking failed and stopping its container\n", t.ID, restartCap)
+				m.stopTaskTerminal(t, reason)
 				continue
 			}
 
