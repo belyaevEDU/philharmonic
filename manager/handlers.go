@@ -143,6 +143,18 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 	taskCopy := taskToStop
 	taskCopy.State = task.Completed
+	taskCopy.ManuallyStopped = true
+
+	// recorded before the stop event is queued: queuing first would leave an
+	// unflagged stop in flight, which clean-exit restart policies could undo
+	if err := a.Manager.markStopRequested(taskToStop.ID); err != nil {
+		msg := fmt.Sprintf("Error recording stop request for task %s: %v\n", taskToStop.ID, err)
+		responseErr := handlers.HttpResponseHelper(w, msg, http.StatusInternalServerError)
+		if responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
+		}
+		return
+	}
 
 	te := task.TaskEvent{
 		ID:        uuid.New(),

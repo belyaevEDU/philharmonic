@@ -1260,27 +1260,26 @@ func (m *Manager) markFailed(id uuid.UUID, restartCount int, reason string) {
 	}
 }
 
-// records that the user stopped the task
-func (m *Manager) markManuallyStopped(id uuid.UUID) {
+// records that the user stopped the task,
+// so restart policies must not resurrect it later
+func (m *Manager) markStopRequested(id uuid.UUID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.TaskDb == nil {
-		return
+		return errors.New("task db is nil")
 	}
 
 	persisted, err := m.TaskDb.Get(id)
 	if err != nil {
-		if !errors.Is(err, store.ErrNotFound) {
-			log.Printf("Cannot record manual stop for task %s: %v\n", id, err)
-		}
-		return
+		return fmt.Errorf("getting task %s: %w", id, err)
 	}
 	updated := *persisted
 	updated.ManuallyStopped = true
 	if err := m.TaskDb.Put(id, &updated); err != nil {
-		log.Printf("Cannot record manual stop for task %s: %v\n", id, err)
+		return fmt.Errorf("storing task %s: %w", id, err)
 	}
+	return nil
 }
 
 // used when a restart relocates a task to a different
