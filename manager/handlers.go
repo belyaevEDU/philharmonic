@@ -130,7 +130,7 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 	if taskToStop.State == task.Pending || taskToStop.State == task.Completed ||
 		a.Manager.taskWorker(taskToStop.ID) == "" ||
 		(taskToStop.State == task.Failed &&
-			(taskToStop.RestartCount >= taskToStop.EffectiveMaxRestarts(MaxRestarts) || !taskToStop.FinishTime.IsZero())) {
+			(taskToStop.AtRestartCap(MaxRestarts) || taskToStop.IsTerminal())) {
 		if err := a.Manager.deleteTask(taskToStop); err != nil {
 			msg := fmt.Sprintf("Error deleting task %s: %v\n", taskToStop.ID, err)
 			responseErr := handlers.HttpResponseHelper(w, msg, http.StatusInternalServerError)

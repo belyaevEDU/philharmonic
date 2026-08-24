@@ -1049,7 +1049,7 @@ func (m *Manager) updateTasks() {
 				if t.FailureReason != "" {
 					updated.FailureReason = t.FailureReason
 				}
-			} else if updated.State != task.Failed || updated.FinishTime.IsZero() {
+			} else if !updated.IsTerminal() {
 				// not terminal-failed -> trust the worker's state
 				updated.State = t.State
 			}
@@ -1502,8 +1502,8 @@ func (m *Manager) restartFailedTasks() {
 			}
 
 			// a terminal stamp means stopTaskTerminal already ended this task.
-			// retryable failures always carry FinishTime = 0. (markFailed clears it)
-			if !t.FinishTime.IsZero() {
+			// retryable failures always carry FinishTime = 0 (markFailed clears it)
+			if t.IsTerminal() {
 				continue
 			}
 
@@ -1515,7 +1515,7 @@ func (m *Manager) restartFailedTasks() {
 			}
 
 			restartCap := t.EffectiveMaxRestarts(MaxRestarts)
-			if t.RestartCount >= restartCap {
+			if t.AtRestartCap(MaxRestarts) {
 				reason := t.FailureReason
 				if reason == "" {
 					reason = fmt.Sprintf("restart cap (%d) reached", restartCap)
@@ -1542,7 +1542,7 @@ func (m *Manager) restartFailedTasks() {
 			}
 
 			restartCap := t.EffectiveMaxRestarts(MaxRestarts)
-			if t.RestartCount >= restartCap {
+			if t.AtRestartCap(MaxRestarts) {
 				reason := fmt.Sprintf("restart cap (%d) reached after a clean exit", restartCap)
 				log.Printf("Task %s %s; marking failed and stopping its container\n", t.ID, reason)
 				m.stopTaskTerminal(t, reason)
@@ -1627,7 +1627,7 @@ func (m *Manager) runChecker(ctx context.Context, t task.Task, h *checkerHandle)
 				continue
 			}
 
-			if t.RestartCount >= t.EffectiveMaxRestarts(MaxRestarts) {
+			if t.AtRestartCap(MaxRestarts) {
 				reason := fmt.Sprintf("health check failed after all restarts & retries. last error: %v", err)
 				log.Printf("Task %s: %s; marking failed and stopping its container\n", t.ID, reason)
 				m.stopTaskTerminal(t, reason)
