@@ -67,6 +67,16 @@ func ShouldRestart(policy string) bool {
 	return false
 }
 
+// reports whether a cleanly exited task
+// with this policy may be restarted by the orchestrator
+func ShouldRestartOnSuccess(policy string) bool {
+	switch policy {
+	case RestartPolicyAlways, RestartPolicyUnlessStopped:
+		return true
+	}
+	return false
+}
+
 func (t Task) EffectiveMaxRestarts(defaultMaxRestarts int) int {
 	if t.MaxRestarts > 0 {
 		return t.MaxRestarts
@@ -132,13 +142,20 @@ type Task struct {
 	Ports         []PortMapping
 	RestartPolicy string
 	HostPorts     []PortMapping // resolved bindings reported by the daemon
-	HealthCheck   *HealthCheck
-	RestartCount  int
-	MaxRestarts   int    // per-task restart cap; 0 = fall back to manager.MaxRestarts
-	FailureReason string `json:",omitempty"`
-	StartTime     time.Time
-	FinishTime    time.Time
-	Timeout       int64 // max seconds a task may run before the worker kills it, 0 = unlimited
+
+	HealthCheck     *HealthCheck
+	RestartCount    int
+	MaxRestarts     int    // per-task restart cap; 0 = fall back to manager.MaxRestarts
+	FailureReason   string `json:",omitempty"`
+	ManuallyStopped bool   `json:",omitempty"` // by user
+	// earliest time the orchestrator will attempt the next restart
+	// zero means immediately eligible
+	NextRetryAt time.Time `json:",omitempty"`
+
+	StartTime  time.Time
+	FinishTime time.Time
+
+	Timeout int64 // max seconds a task may run before the worker kills it, 0 = unlimited
 }
 
 func (t Task) Key() uuid.UUID { // store.Keyable impl
