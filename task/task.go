@@ -77,13 +77,6 @@ func ShouldRestartOnSuccess(policy string) bool {
 	return false
 }
 
-func (t Task) EffectiveMaxRestarts(defaultMaxRestarts int) int {
-	if t.MaxRestarts > 0 {
-		return t.MaxRestarts
-	}
-	return defaultMaxRestarts
-}
-
 type HealthCheckType string
 
 const (
@@ -160,6 +153,21 @@ type Task struct {
 
 func (t Task) Key() uuid.UUID { // store.Keyable impl
 	return t.ID
+}
+
+func (t Task) EffectiveMaxRestarts(defaultMaxRestarts int) int {
+	if t.MaxRestarts > 0 {
+		return t.MaxRestarts
+	}
+	return defaultMaxRestarts
+}
+
+func (t Task) AtRestartCap(clusterMaxRestarts int) bool {
+	return t.RestartCount >= t.EffectiveMaxRestarts(clusterMaxRestarts)
+}
+
+func (t Task) IsTerminal() bool {
+	return t.State == Failed && !t.FinishTime.IsZero()
 }
 
 // captured snapshot of a task's container output,
