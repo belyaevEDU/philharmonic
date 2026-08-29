@@ -71,9 +71,9 @@ type Manager struct {
 	//
 	// locking rules:
 	// - read-modify-write sequences (accept, update, delete, commit)
-	//   hold mu across their store I/O
-	// - pure readers snapshot the store pointer under mu, release it, and
-	//   never hold mu during store I/O to not stall other processes
+	//   hold the mutex across their store I/O
+	// - pure readers snapshot the store pointer under the mutex, release it,
+	//   and never hold the mutex during store I/O to not stall other processes
 	mu sync.RWMutex
 
 	WorkerNodes []*node.Node
@@ -271,12 +271,39 @@ func restartBackoff(restartCount int) time.Duration {
 // marks an infra issue during placement
 var errClusterUnreachable = errors.New("no worker is reachable")
 
-func (m *Manager) clusterUnreachable() bool {
+// marks a placement attempt that ran before any stats sample was collected
+var errStatsNotCollected = errors.New("worker stats have not been collected yet")
+
+func (m *Manager) statsPending() bool {
 	for _, n := range m.WorkerNodes {
-		if n == nil {
-			continue
+		if n != nil && n.HasStats() {
+			return false
 		}
-		if _, err := n.GetStats(); err == nil {
+	}
+	return true
+}
+
+func (m *Manager) clusterUnreachable() bool {
+	nodes := make([]*node.Node, 0, len(m.WorkerNodes))
+	for _, n := range m.WorkerNodes {
+		if n != nil {
+			nodes = append(nodes, n)
+		}
+	}
+	if len(nodes) == 0 {
+		return true
+	}
+
+	// buffered so the early return on the first reachable worker
+	// never leaks the remaining probe goroutines
+	reachable := make(chan bool, len(nodes))
+	for _, n := range nodes {
+		go func(n *node.Node) {
+			reachable <- n.Reachable()
+		}(n)
+	}
+	for range nodes {
+		if <-reachable {
 			return false
 		}
 	}
