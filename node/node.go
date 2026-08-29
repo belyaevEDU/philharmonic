@@ -35,6 +35,8 @@ type Node struct {
 	Stats           stats.Stats
 	Role            string
 
+	haveStats bool
+
 	mu sync.Mutex
 }
 
@@ -107,9 +109,26 @@ func (n *Node) GetStats() (*stats.Stats, error) {
 	n.Disk = clampToInt64(s.DiskTotal())
 	n.MemoryAllocated = s.MemoryAllocated
 	n.Stats = s
+	n.haveStats = true
 	n.mu.Unlock()
 
 	return &s, nil
+}
+
+func (n *Node) Reachable() bool {
+	url := httpclient.WorkerURL(n.Address, "/stats")
+	resp, err := httpclient.Worker().Get(url) // #nosec G107
+	if err != nil {
+		return false
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Error closing reachability probe response body: %v\n", err)
+		}
+	}()
+	// the body is irrelevant, we just need the fact that it's reachable
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+	return resp.StatusCode == http.StatusOK
 }
 
 func (n *Node) GetPorts() (*worker.OccupiedPorts, error) {
@@ -139,6 +158,23 @@ func (n *Node) GetPorts() (*worker.OccupiedPorts, error) {
 		return nil, fmt.Errorf("error unmarshalling ports from %v: %w", n.Address, err)
 	}
 	return &occ, nil
+}
+
+func (n *Node) ClearStats() {
+	n.mu.Lock()
+	n.Cores = 0
+	n.Memory = 0
+	n.Disk = 0
+	n.MemoryAllocated = 0
+	n.Stats = stats.Stats{}
+	n.haveStats = false
+	n.mu.Unlock()
+}
+
+func (n *Node) HasStats() bool {
+	n.mu.Lock() // not RLock to prevent data race
+	defer n.mu.Unlock()
+	return n.haveStats
 }
 
 // a concurrency-safe point-in-time copy of the resource fields
