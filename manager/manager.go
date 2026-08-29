@@ -14,6 +14,7 @@ import (
 	"github.com/belyaevedu/philharmonic/scheduler"
 	"github.com/belyaevedu/philharmonic/store"
 	"github.com/belyaevedu/philharmonic/task"
+	"github.com/belyaevedu/philharmonic/wake"
 	"github.com/google/uuid"
 )
 
@@ -38,7 +39,13 @@ var (
 )
 
 type Manager struct {
-	pending      *queue.Queue[task.TaskEvent]
+	pending *queue.Queue[task.TaskEvent]
+
+	// fires when new work is queued, only for SendWork
+	dispatchWaker wake.Waker
+	// fires when a worker's state may have changed
+	updateWaker wake.Waker
+
 	TaskDb       store.Store[task.Task]
 	EventDb      store.Store[task.TaskEvent]
 	Assignments  store.Store[Assignment]
@@ -86,11 +93,13 @@ func New(workers []string, schedulerType, dbType string) (*Manager, error) {
 	}
 
 	m := Manager{
-		pending:      queue.New[task.TaskEvent](),
-		Reservations: NewReservationTable(),
-		checkers:     newCheckerSet(),
-		WorkerNodes:  nodes,
-		Scheduler:    s,
+		pending:       queue.New[task.TaskEvent](),
+		dispatchWaker: wake.NewWaker(),
+		updateWaker:   wake.NewWaker(),
+		Reservations:  NewReservationTable(),
+		checkers:      newCheckerSet(),
+		WorkerNodes:   nodes,
+		Scheduler:     s,
 	}
 
 	var ts store.Store[task.Task]
@@ -218,6 +227,7 @@ func (m *Manager) UpdateTasks(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-m.updateWaker.C:
 		case <-ticker.C:
 		}
 	}
@@ -263,6 +273,7 @@ func (m *Manager) ProcessTasks(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-m.dispatchWaker.C:
 		case <-ticker.C:
 		}
 	}
