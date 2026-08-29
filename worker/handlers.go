@@ -41,7 +41,13 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.Worker.AddTask(te.Task); err != nil {
-		if responseErr := handlers.HttpResponseHelper(w, err.Error(), http.StatusInternalServerError); responseErr != nil {
+		// a stop against a task this worker never knew is a truthful 404
+		// anything else (including store failures) is an internal error
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		if responseErr := handlers.HttpResponseHelper(w, err.Error(), status); responseErr != nil {
 			log.Printf(handlers.ErrorEncodingJson, responseErr)
 		}
 		return
