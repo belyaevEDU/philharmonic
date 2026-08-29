@@ -1268,6 +1268,7 @@ func (m *Manager) RefreshNodeStats(ctx context.Context) {
 	for {
 		for _, n := range m.WorkerNodes {
 			if _, err := n.GetStats(); err != nil {
+				n.ClearStats()
 				log.Printf("Error refreshing stats for node %s: %v", n.Address, err)
 			}
 		}
