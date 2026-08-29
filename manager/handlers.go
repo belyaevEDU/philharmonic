@@ -2,6 +2,7 @@ package manager
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/belyaevedu/philharmonic/auth"
 	"github.com/belyaevedu/philharmonic/handlers"
+	"github.com/belyaevedu/philharmonic/store"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -151,6 +153,13 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 	// recorded before the stop event is queued: queuing first would leave an
 	// unflagged stop in flight, which clean-exit restart policies could undo
 	if err := a.Manager.markStopRequested(taskToStop.ID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// the task vanished between resolution and the stop request.
+			// report the miss instead of an internal error
+			log.Printf("Task %s disappeared while being stopped\n", taskToStop.ID)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		msg := fmt.Sprintf("Error recording stop request for task %s: %v\n", taskToStop.ID, err)
 		responseErr := handlers.HttpResponseHelper(w, msg, http.StatusInternalServerError)
 		if responseErr != nil {
