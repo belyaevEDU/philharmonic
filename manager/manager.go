@@ -1294,9 +1294,9 @@ func (m *Manager) restartTask(t task.Task) error {
 
 	w, err := m.selectAndReserveWorker(&next, owner)
 	if err != nil {
-		if errors.Is(err, errClusterUnreachable) {
-			// infra issue, transient
-			reason := fmt.Sprintf("no reachable worker to restart: %v", err)
+		if errors.Is(err, errClusterUnreachable) || errors.Is(err, errStatsNotCollected) {
+			// infra issue / stats not yet collected, transient
+			reason := fmt.Sprintf("cannot restart yet: %v", err)
 			m.markFailed(t.ID, t.RestartCount, reason)
 			return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
 		}
@@ -1362,32 +1362,86 @@ func (m *Manager) restartTask(t task.Task) error {
 		return fmt.Errorf("cannot restart task %s: %s", t.ID, reason)
 	}
 
-	m.mu.Lock()
-	oldOwner := readAssignment(m.Assignments, t.ID)
-	if err := m.setAssignment(t.ID, w.Address); err != nil {
-		m.mu.Unlock()
-		return fmt.Errorf("cannot store assignment for restarted task %s: %w", t.ID, err)
+	respTask := task.Task{}
+	if err := d.Decode(&respTask); err != nil {
+		log.Printf("Error decoding restart response: %v\n", err)
 	}
+	// the worker normally echoes the accepted event before its run loop has assigned a fresh container ID
+	cleanupTask := respTask
+	if cleanupTask.ID != next.ID {
+		cleanupTask = next
+	}
+
+	m.mu.Lock()
 	if m.TaskDb == nil {
 		m.mu.Unlock()
+		m.rollbackAcceptedWorkerTask(w.Address, next, cleanupTask, true)
 		return fmt.Errorf("cannot store restarted task %s: task db is nil", t.ID)
 	}
-	if err := m.TaskDb.Put(next.ID, &next); err != nil {
+
+	persisted, getErr := m.TaskDb.Get(t.ID)
+
+	switch {
+	case getErr != nil && errors.Is(getErr, store.ErrNotFound):
 		m.mu.Unlock()
+		// the task was deleted while the restart was in flight
+		m.rollbackAcceptedWorkerTask(w.Address, next, cleanupTask, true)
+		return fmt.Errorf("task %s was deleted while being restarted", t.ID)
+	case getErr != nil:
+		m.mu.Unlock()
+		// an unreadable manager record is unsafe to overwrite
+		// undo the worker-side restart and let the next retry try again
+		m.rollbackAcceptedWorkerTask(w.Address, next, cleanupTask, true)
+		return fmt.Errorf("cannot read restarted task %s before commit: %w", t.ID, getErr)
+	case persisted.ManuallyStopped:
+		m.mu.Unlock()
+		// the user asked to stop the task while the restart was in flight
+		m.rollbackAcceptedWorkerTask(w.Address, next, cleanupTask, true)
+		return fmt.Errorf("task %s was stopped while being restarted", t.ID)
+	}
+
+	originalTask := *persisted
+	oldAssignment, hadOldAssignment, assignmentErr := readAssignmentState(m.Assignments, t.ID)
+	if assignmentErr != nil {
+		m.mu.Unlock()
+		m.rollbackAcceptedWorkerTask(w.Address, next, cleanupTask, true)
+		return fmt.Errorf("cannot read assignment for restarted task %s: %w", t.ID, assignmentErr)
+	}
+
+	// Both manager writes happen after the worker's 201. Any failure must be
+	// compensated before retrying, or the worker would retain a live task while
+	// the manager retained only the old record.
+	if err := m.setAssignment(t.ID, w.Address); err != nil {
+		restoreErr := restoreAssignment(m.Assignments, t.ID, oldAssignment, hadOldAssignment)
+		m.mu.Unlock()
+		if restoreErr != nil {
+			log.Printf("Could not restore assignment for task %s after commit failure: %v\n", t.ID, restoreErr)
+		}
+		m.rollbackAcceptedWorkerTask(w.Address, next, cleanupTask, true)
+		return fmt.Errorf("cannot store assignment for restarted task %s: %w", t.ID, err)
+	}
+	if err := m.TaskDb.Put(next.ID, &next); err != nil {
+		assignmentRestoreErr := restoreAssignment(m.Assignments, t.ID, oldAssignment, hadOldAssignment)
+		taskRestoreErr := m.TaskDb.Put(t.ID, &originalTask)
+		m.mu.Unlock()
+		if assignmentRestoreErr != nil {
+			log.Printf("Could not restore assignment for task %s after task commit failure: %v\n", t.ID, assignmentRestoreErr)
+		}
+		if taskRestoreErr != nil {
+			log.Printf("Could not restore task %s after task commit failure: %v\n", t.ID, taskRestoreErr)
+		}
+		m.rollbackAcceptedWorkerTask(w.Address, next, cleanupTask, true)
 		return fmt.Errorf("cannot store restarted task %s: %w", t.ID, err)
 	}
 	m.mu.Unlock()
 
+	oldOwner := ""
+	if hadOldAssignment {
+		oldOwner = oldAssignment.Worker
+	}
 	if oldOwner != "" && oldOwner != w.Address {
 		m.Reservations.Release(oldOwner, &t)
 		m.bestEffortStopOldContainer(oldOwner, t)
-	}
-
-	newTask := task.Task{}
-	if err := d.Decode(&newTask); err != nil {
-		log.Printf("Error decoding restart response: %v\n", err)
-		// ownership already committed via 201, so we dont really care about a json decoding error
-		return nil
 	}
 
 	log.Printf("Restarted task %s on worker %s\n", t.ID, w.Address)
