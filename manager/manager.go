@@ -697,6 +697,36 @@ func (m *Manager) setAssignment(id uuid.UUID, worker string) error {
 	return m.Assignments.Put(id, &Assignment{TaskID: id, Worker: worker})
 }
 
+// reads an assignment while the caller holds m.mu,
+// preserving whether the record existed so a failed commit can restore the prior state
+func readAssignmentState(assignments store.Store[Assignment], id uuid.UUID) (Assignment, bool, error) {
+	if assignments == nil {
+		return Assignment{}, false, errors.New("assignments db is nil")
+	}
+	a, err := assignments.Get(id)
+	if errors.Is(err, store.ErrNotFound) {
+		return Assignment{}, false, nil
+	}
+	if err != nil {
+		return Assignment{}, false, err
+	}
+	if a == nil {
+		return Assignment{}, false, errors.New("assignments store returned a nil record")
+	}
+	return *a, true, nil
+}
+
+// restores an assignment while the caller holds m.mu
+func restoreAssignment(assignments store.Store[Assignment], id uuid.UUID, old Assignment, existed bool) error {
+	if assignments == nil {
+		return errors.New("assignments db is nil")
+	}
+	if !existed {
+		return assignments.Delete(id)
+	}
+	return assignments.Put(id, &old)
+}
+
 func (m *Manager) workerByAddress(address string) *node.Node {
 	for _, worker := range m.WorkerNodes {
 		if worker.Address == address {
@@ -855,10 +885,11 @@ func (m *Manager) SendWork() {
 		var err error
 		w, err = m.selectAndReserveWorker(&t, "")
 		if err != nil {
-			if errors.Is(err, errClusterUnreachable) {
-				// total blackout = infra issue, network blip, etc.
+			if errors.Is(err, errClusterUnreachable) || errors.Is(err, errStatsNotCollected) {
+				// total blackout or stats not yet collected
+				// infra issue, network blip, manager just booted, etc.
 				// keep the task in the pending queue
-				log.Printf("No reachable worker to schedule task %s (%v); requeueing\n", t.ID, err)
+				log.Printf("Cannot schedule task %s yet (%v); requeueing\n", t.ID, err)
 				m.enqueuePending(te)
 				return
 			}
@@ -948,6 +979,29 @@ func (m *Manager) SendWork() {
 		fmt.Printf("Error decoding response: %v\n", decodeErr)
 	}
 
+	// the worker normally echoes the accepted event before its run loop has assigned a fresh container ID.
+	// fall back to the event if the response is malformed. the worker can resolve the stop by task ID from its own record
+
+	// i think this and the starttask behaviour needs a refactor ASAP
+	// todo: channel triggered by AddTask for updateTasks on manager and UpdateTasks on worker
+	//       + worker hanging starttaskhandler response until either a container ID is set or an error is propagated
+	//       + refactor this stretched out hellish nightmare
+	cleanupTask := respTask
+	if cleanupTask.ID != t.ID {
+		cleanupTask = te.Task
+	}
+
+	var (
+		cancelled            bool
+		commitErr            error
+		shouldRetryCommit    bool
+		oldAssignment        Assignment
+		hadOldAssignment     bool
+		originalTask         task.Task
+		assignmentRestoreErr error
+		taskRestoreErr       error
+	)
+
 	m.mu.Lock()
 	if m.EventDb == nil {
 		log.Printf("Cannot store event %s: event db is nil\n", te.ID)
@@ -957,26 +1011,62 @@ func (m *Manager) SendWork() {
 	if !isStop {
 		// a cancellation may have deleted the task while the POST was in flight.
 		// if so, don't resurrect it. release the ports we reserved and issue a
-		// compensating stop for the container the worker just created
-		if _, getErr := m.TaskDb.Get(t.ID); getErr != nil {
-			m.mu.Unlock()
-			if reserved {
-				m.Reservations.Release(w.Address, &t)
-			}
-			log.Printf("Task %s was cancelled while starting on worker %s; stopping orphaned container\n", t.ID, w.Address)
-			m.bestEffortStopOldContainer(w.Address, respTask)
-			return
-		}
-		if err := m.setAssignment(t.ID, w.Address); err != nil {
-			log.Printf("Error storing assignment for task %s: %v\n", t.ID, err)
-		}
+		// compensating stop for the task the worker just accepted
 		if m.TaskDb == nil {
-			log.Printf("Cannot store task %s: task db is nil\n", t.ID)
-		} else if err := m.TaskDb.Put(t.ID, &t); err != nil {
-			log.Printf("Error storing task %s: %v\n", t.ID, err)
+			commitErr = errors.New("task db is nil")
+		} else if persisted, getErr := m.TaskDb.Get(t.ID); getErr != nil {
+			if errors.Is(getErr, store.ErrNotFound) {
+				cancelled = true
+			} else {
+				commitErr = fmt.Errorf("checking task %s before commit: %w", t.ID, getErr)
+				shouldRetryCommit = true
+			}
+		} else if persisted == nil {
+			commitErr = fmt.Errorf("checking task %s before commit: store returned a nil record", t.ID)
+			shouldRetryCommit = true
+		} else {
+			originalTask = *persisted
+			oldAssignment, hadOldAssignment, commitErr = readAssignmentState(m.Assignments, t.ID)
+			if commitErr != nil {
+				shouldRetryCommit = true
+			} else {
+				// Both manager writes happen after the worker's 201. Any failure
+				// is compensated below before this event is retried.
+				if err := m.setAssignment(t.ID, w.Address); err != nil {
+					commitErr = fmt.Errorf("storing assignment for task %s: %w", t.ID, err)
+					assignmentRestoreErr = restoreAssignment(m.Assignments, t.ID, oldAssignment, hadOldAssignment)
+				} else if err := m.TaskDb.Put(t.ID, &t); err != nil {
+					commitErr = fmt.Errorf("storing task %s: %w", t.ID, err)
+					assignmentRestoreErr = restoreAssignment(m.Assignments, t.ID, oldAssignment, hadOldAssignment)
+					taskRestoreErr = m.TaskDb.Put(t.ID, &originalTask)
+				}
+				if commitErr != nil {
+					shouldRetryCommit = true
+				}
+			}
 		}
 	}
 	m.mu.Unlock()
+
+	if cancelled {
+		m.rollbackAcceptedWorkerTask(w.Address, t, cleanupTask, reserved)
+		log.Printf("Task %s was cancelled while starting on worker %s; stopping orphaned task\n", t.ID, w.Address)
+		return
+	}
+	if commitErr != nil {
+		if assignmentRestoreErr != nil {
+			log.Printf("Could not restore assignment for task %s after dispatch commit failure: %v\n", t.ID, assignmentRestoreErr)
+		}
+		if taskRestoreErr != nil {
+			log.Printf("Could not restore task %s after dispatch commit failure: %v\n", t.ID, taskRestoreErr)
+		}
+		m.rollbackAcceptedWorkerTask(w.Address, t, cleanupTask, reserved)
+		log.Printf("Could not commit task %s after worker %s accepted it: %v\n", t.ID, w.Address, commitErr)
+		if shouldRetryCommit {
+			m.enqueuePending(te)
+		}
+		return
+	}
 
 	if isStop {
 		m.Reservations.Release(w.Address, &t)
@@ -1117,7 +1207,9 @@ func (m *Manager) updateTasks() {
 }
 
 // asks a worker to drop its record of a task the manager no longer knows.
-// retried naturally by updateTasks until the worker confirms
+// the worker stops a still-active container before forgetting,
+// so the DELETE can outlast a short client timeout.
+// the manager simply retries on the next tick, where a finished forget answers 404
 func (m *Manager) forgetTaskOnWorker(addr string, id uuid.UUID) {
 	url := httpclient.WorkerURL(addr, "/tasks/"+id.String())
 	req, err := http.NewRequest(http.MethodDelete, url, nil) // #nosec G107
@@ -1358,11 +1450,13 @@ func (m *Manager) markStopRequested(id uuid.UUID) error {
 	return nil
 }
 
-// used when a restart relocates a task to a different
-// worker so the previous container isn't orphaned.
-// errors only logged
-func (m *Manager) bestEffortStopOldContainer(addr string, t task.Task) {
-	if t.ContainerID == "" {
+// sends a best-effort stop event to a worker for a task.
+// the container ID may be empty because the worker accepts a start event before its run loop creates the container.
+// the worker then resolves the stop against its own current task record.
+//
+// errors are just logged
+func (m *Manager) bestEffortStopWorkerTask(addr string, t task.Task) {
+	if addr == "" || t.ID == uuid.Nil {
 		return
 	}
 	stopTask := t
@@ -1370,7 +1464,7 @@ func (m *Manager) bestEffortStopOldContainer(addr string, t task.Task) {
 	te := task.TaskEvent{
 		ID:        uuid.New(),
 		State:     task.Completed,
-		Timestamp: time.Now(),
+		Timestamp: time.Now().UTC(),
 		Task:      stopTask,
 	}
 	data, err := json.Marshal(te)
@@ -1381,7 +1475,7 @@ func (m *Manager) bestEffortStopOldContainer(addr string, t task.Task) {
 	url := httpclient.WorkerURL(addr, "/tasks")
 	resp, err := httpclient.Worker().Post(url, "application/json", bytes.NewBuffer(data)) // #nosec G107
 	if err != nil {
-		log.Printf("Could not reach old owner %s to stop orphaned container %s: %v", addr, t.ContainerID, err)
+		log.Printf("Could not reach worker %s to stop task %s: %v", addr, t.ID, err)
 		return
 	}
 	defer func() {
@@ -1390,8 +1484,26 @@ func (m *Manager) bestEffortStopOldContainer(addr string, t task.Task) {
 		}
 	}()
 	if resp.StatusCode != http.StatusCreated {
-		log.Printf("Old owner %s responded %d stopping orphaned container %s", addr, resp.StatusCode, t.ContainerID)
+		log.Printf("Worker %s responded %d stopping task %s", addr, resp.StatusCode, t.ID)
 	}
+}
+
+// used when a restart relocates a task to a different worker so the previous container isn't orphaned.
+// unlike the generic cleanup above, this helper requires a known old container ID.
+func (m *Manager) bestEffortStopOldContainer(addr string, t task.Task) {
+	if t.ContainerID == "" {
+		return
+	}
+	m.bestEffortStopWorkerTask(addr, t)
+}
+
+// undoes the worker-side part of a restart/start whose manager-side commit
+// failed after the worker accepted it
+func (m *Manager) rollbackAcceptedWorkerTask(addr string, reservationTask, stopTask task.Task, reserved bool) {
+	if reserved {
+		m.Reservations.Release(addr, &reservationTask)
+	}
+	m.bestEffortStopWorkerTask(addr, stopTask)
 }
 
 func (m *Manager) stopTaskTerminal(t task.Task, reason string) {
@@ -1589,11 +1701,11 @@ func (m *Manager) restartFailedTasks() {
 				continue
 			}
 
-			restartCap := t.EffectiveMaxRestarts(MaxRestarts)
+			// at the restart cap a cleanly exited task stays Completed:
+			// there is no failure to record and no container left to stop.
+			// the cap is derivable from the record (RestartCount vs MaxRestarts),
+			// so this is a silent skip rather than a log every loop iteration
 			if t.AtRestartCap(MaxRestarts) {
-				reason := fmt.Sprintf("restart cap (%d) reached after a clean exit", restartCap)
-				log.Printf("Task %s %s; marking failed and stopping its container\n", t.ID, reason)
-				m.stopTaskTerminal(t, reason)
 				continue
 			}
 
