@@ -365,39 +365,56 @@ func (m *Manager) selectWorkerLocked(t *task.Task, selfOwner string) (*node.Node
 }
 
 func (m *Manager) selectAndReserveWorker(t *task.Task, owner string) (*node.Node, error) {
-	m.Reservations.Lock()
-	defer m.Reservations.Unlock()
-
 	if err := task.ValidatePortMappings(t.Ports); err != nil {
 		return nil, err
 	}
-	if owner != "" { // restart branch
-		ownerNode := m.workerByAddress(owner)
-		if ownerNode != nil && !m.Reservations.ConflictsLocked(owner, t, true) {
-			if !hasPinnedHostPorts(t) {
-				return ownerNode, nil
-			}
-			occ, err := m.fetchWorkerPorts(ownerNode)
-			if err == nil && m.canHost(t, occ, true) && m.Reservations.TryReserveLocked(owner, t) {
-				return ownerNode, nil
-			}
-			if err != nil {
-				log.Printf("Cannot use owning worker %s during port admission: %v\n", owner, err)
-			}
-		}
-	}
 
-	selected, err := m.selectWorkerLocked(t, "")
-	if err != nil {
-		if m.clusterUnreachable() {
-			return nil, fmt.Errorf("%w: %v", errClusterUnreachable, err)
+	var (
+		selected *node.Node
+		selErr   error
+	)
+	func() { // for defer to activate in early return cases
+		m.Reservations.Lock()
+		defer m.Reservations.Unlock()
+
+		if owner != "" { // restart branch
+			ownerNode := m.workerByAddress(owner)
+			if ownerNode != nil && !m.Reservations.ConflictsLocked(owner, t, true) {
+				if !hasPinnedHostPorts(t) {
+					selected = ownerNode
+					return
+				}
+				occ, err := m.fetchWorkerPorts(ownerNode)
+				if err == nil && m.canHost(t, occ, true) && m.Reservations.TryReserveLocked(owner, t) {
+					selected = ownerNode
+					return
+				}
+				if err != nil {
+					log.Printf("Cannot use owning worker %s during port admission: %v\n", owner, err)
+				}
+			}
 		}
-		return nil, err
-	}
-	// impossible while the table's lock is held and selectWorkerLocked checked
-	// conflicts for every candidate; handled defensively anyway
-	if !m.Reservations.TryReserveLocked(selected.Address, t) {
-		return nil, fmt.Errorf("lost race reserving host ports for task %s on %s", t.ID, selected.Address)
+
+		selected, selErr = m.selectWorkerLocked(t, "")
+		if selErr != nil {
+			return
+		}
+		// impossible while the table's lock is held and selectWorkerLocked checked
+		// conflicts for every candidate. handled defensively anyway :shrug:
+		if !m.Reservations.TryReserveLocked(selected.Address, t) {
+			selected, selErr = nil, fmt.Errorf("lost race reserving host ports for task %s on %s", t.ID, selected.Address)
+		}
+	}()
+	if selErr != nil {
+		// have to wait for stat collection
+		if m.statsPending() {
+			return nil, fmt.Errorf("%w: %v", errStatsNotCollected, selErr)
+		}
+
+		if m.clusterUnreachable() {
+			return nil, fmt.Errorf("%w: %v", errClusterUnreachable, selErr)
+		}
+		return nil, selErr
 	}
 	return selected, nil
 }
