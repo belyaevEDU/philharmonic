@@ -16,6 +16,7 @@ import (
 	"github.com/belyaevedu/philharmonic/stats"
 	"github.com/belyaevedu/philharmonic/store"
 	"github.com/belyaevedu/philharmonic/task"
+	"github.com/belyaevedu/philharmonic/wake"
 	"github.com/cakturk/go-netstat/netstat"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
@@ -41,6 +42,11 @@ type Worker struct {
 	Db    store.Store[task.Task]
 	LogDb store.Store[task.TaskLogs]
 	Stats *stats.Stats
+
+	// takes RunTasks out of its tick early when a task is queued
+	runWaker wake.Waker
+	// updates when local task state may have changed
+	updateWaker wake.Waker
 
 	// stopTaskForForget runs the container stop when forgetting an active
 	// task; overridden in tests. nil means StopTask
@@ -88,11 +94,13 @@ func New(name, dbType string) (*Worker, error) {
 	}
 
 	return &Worker{
-		Name:   name,
-		Queue:  queue.New[task.Task](),
-		Db:     db,
-		LogDb:  logDb,
-		boltDb: boltDb,
+		Name:        name,
+		Queue:       queue.New[task.Task](),
+		Db:          db,
+		LogDb:       logDb,
+		boltDb:      boltDb,
+		runWaker:    wake.NewWaker(),
+		updateWaker: wake.NewWaker(),
 	}, nil
 }
 
@@ -364,6 +372,8 @@ func (w *Worker) AddTask(t task.Task) error {
 	}
 
 	w.Queue.Enqueue(t)
+	w.runWaker.Wake()
+	w.updateWaker.Wake()
 	return nil
 }
 
@@ -663,11 +673,14 @@ func (w *Worker) RunTasks(ctx context.Context) {
 			result := w.runTask()
 			if result.Error != nil {
 				log.Printf("Error running task: %v\n", result.Error)
+			} else {
+				w.updateWaker.Wake()
 			}
 		}
 		select {
 		case <-ctx.Done():
 			return
+		case <-w.runWaker.C:
 		case <-ticker.C:
 		}
 	}
@@ -946,6 +959,7 @@ func (w *Worker) UpdateTasks(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-w.updateWaker.C:
 		case <-ticker.C:
 		}
 	}
