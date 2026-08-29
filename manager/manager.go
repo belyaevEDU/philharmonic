@@ -257,6 +257,10 @@ func restartBackoff(restartCount int) time.Duration {
 	d := RestartBackoffBase
 	for i := 1; i < restartCount && d < RestartBackoffMax; i++ {
 		d *= 2
+		// clamp to the cap if overflow hits
+		if d < 0 {
+			return RestartBackoffMax
+		}
 	}
 	if d > RestartBackoffMax {
 		return RestartBackoffMax
