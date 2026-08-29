@@ -138,6 +138,21 @@ func (m *Manager) SendWork() {
 		}
 	}()
 
+	// the worker refuses stops for tasks it does not know with a 404.
+	// so from the cluster's perspective such a stop is already complete
+	if isStop && resp.StatusCode == http.StatusNotFound {
+		log.Printf("Worker %s has no record of task %s; considering the stop complete\n", w.Address, t.ID)
+		m.mu.Lock()
+		if m.EventDb == nil {
+			log.Printf("Cannot store event %s: event db is nil\n", te.ID)
+		} else if err := m.EventDb.Put(te.ID, &te); err != nil {
+			log.Printf("Error storing event %s: %v\n", te.ID, err)
+		}
+		m.mu.Unlock()
+		m.Reservations.Release(w.Address, &t)
+		return
+	}
+
 	d := json.NewDecoder(resp.Body)
 	if resp.StatusCode != http.StatusCreated {
 		if reserved {
@@ -171,12 +186,8 @@ func (m *Manager) SendWork() {
 		fmt.Printf("Error decoding response: %v\n", decodeErr)
 	}
 
-	// the worker normally echoes the accepted event before its run loop has assigned a fresh container ID.
+	// the worker echoes the accepted event before its run loop has assigned a fresh container ID.
 	// fall back to the event if the response is malformed. the worker can resolve the stop by task ID from its own record
-
-	// i think this and the starttask behaviour needs a refactor ASAP
-	// todo: worker hanging starttaskhandler response until either a container ID is set or an error is propagated
-	//       + refactor this stretched out hellish nightmare
 	cleanupTask := respTask
 	if cleanupTask.ID != t.ID {
 		cleanupTask = te.Task

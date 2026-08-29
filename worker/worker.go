@@ -346,12 +346,12 @@ func (w *Worker) AddTask(t task.Task) error {
 		}
 	}
 
+	w.dbMu.Lock()
+	if w.Db == nil {
+		w.dbMu.Unlock()
+		return errors.New("worker db is nil")
+	}
 	if t.State == task.Scheduled {
-		w.dbMu.Lock()
-		if w.Db == nil {
-			w.dbMu.Unlock()
-			return errors.New("worker db is nil")
-		}
 		if persisted, err := w.Db.Get(t.ID); err == nil {
 			if t.ContainerID == "" {
 				t.ContainerID = persisted.ContainerID
@@ -368,8 +368,18 @@ func (w *Worker) AddTask(t task.Task) error {
 			w.dbMu.Unlock()
 			return fmt.Errorf("storing worker task %s: %w", queued.ID, err)
 		}
-		w.dbMu.Unlock()
+	} else {
+		// a stop persists nothing up front, but it can only ever run against a task this worker knows
+		// check now, so accepting the event can never precede the run loop's refusal of an unknown task
+		if _, err := w.Db.Get(t.ID); err != nil {
+			w.dbMu.Unlock()
+			if errors.Is(err, store.ErrNotFound) {
+				return fmt.Errorf("task %s is not known to this worker: %w", t.ID, store.ErrNotFound)
+			}
+			return fmt.Errorf("getting worker task %s: %w", t.ID, err)
+		}
 	}
+	w.dbMu.Unlock()
 
 	w.Queue.Enqueue(t)
 	w.runWaker.Wake()
@@ -413,7 +423,6 @@ func (w *Worker) runTask() task.DockerResult {
 		// w.Db has to store the CURRENT state of the container
 		// so we update it if its new and scheduled
 		// all other changes will be stored by startTask and stopTask down the line
-
 		if taskQueued.State != task.Scheduled {
 			w.dbMu.Unlock()
 			return task.DockerResult{
