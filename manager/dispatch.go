@@ -175,8 +175,7 @@ func (m *Manager) SendWork() {
 	// fall back to the event if the response is malformed. the worker can resolve the stop by task ID from its own record
 
 	// i think this and the starttask behaviour needs a refactor ASAP
-	// todo: channel triggered by AddTask for updateTasks on manager and UpdateTasks on worker
-	//       + worker hanging starttaskhandler response until either a container ID is set or an error is propagated
+	// todo: worker hanging starttaskhandler response until either a container ID is set or an error is propagated
 	//       + refactor this stretched out hellish nightmare
 	cleanupTask := respTask
 	if cleanupTask.ID != t.ID {
@@ -259,6 +258,8 @@ func (m *Manager) SendWork() {
 		}
 		return
 	}
+
+	m.updateWaker.Wake()
 
 	if isStop {
 		m.Reservations.Release(w.Address, &t)

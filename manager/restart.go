@@ -206,6 +206,7 @@ func (m *Manager) restartTask(t task.Task) error {
 	}
 
 	log.Printf("Restarted task %s on worker %s\n", t.ID, w.Address)
+	m.updateWaker.Wake()
 	return nil
 }
 

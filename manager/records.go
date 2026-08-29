@@ -69,6 +69,8 @@ func (m *Manager) AddTask(te task.TaskEvent) error {
 	}
 
 	m.enqueuePending(te)
+	m.dispatchWaker.Wake()
+	m.updateWaker.Wake()
 	return nil
 }
 
