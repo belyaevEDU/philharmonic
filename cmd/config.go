@@ -89,6 +89,8 @@ type ManagerConfig struct {
 	DbTaskBucket       *string `yaml:"db_task_bucket"`
 	DbEventBucket      *string `yaml:"db_event_bucket"`
 	MaxRestarts        *int    `yaml:"max_restarts"`
+	RestartBackoffBase *string `yaml:"restart_backoff_base"` // duration
+	RestartBackoffMax  *string `yaml:"restart_backoff_max"`  // duration
 	LoopInterval       *string `yaml:"loop_interval"`        // duration
 	ApiShutdownTimeout *string `yaml:"api_shutdown_timeout"` // duration
 }
@@ -347,6 +349,23 @@ func applyManagerRuntime(m *ManagerConfig) error {
 			return err
 		}
 		manager.MaxRestarts = *v
+	}
+	if v := m.RestartBackoffBase; v != nil {
+		d, err := parsePosDuration("manager.restart_backoff_base", *v)
+		if err != nil {
+			return err
+		}
+		manager.RestartBackoffBase = d
+	}
+	if v := m.RestartBackoffMax; v != nil {
+		d, err := parsePosDuration("manager.restart_backoff_max", *v)
+		if err != nil {
+			return err
+		}
+		manager.RestartBackoffMax = d
+	}
+	if manager.RestartBackoffMax < manager.RestartBackoffBase {
+		return cfgErr("manager.restart_backoff_max", "must be >= manager.restart_backoff_base")
 	}
 	if v := m.LoopInterval; v != nil {
 		d, err := parsePosDuration("manager.loop_interval", *v)

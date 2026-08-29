@@ -2,6 +2,7 @@ package worker
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/belyaevedu/philharmonic/handlers"
+	"github.com/belyaevedu/philharmonic/store"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -61,7 +63,7 @@ func (a *Api) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
+func (a *Api) ForgetTaskHandler(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskID")
 	if taskID == "" {
 		log.Println("No taskID passed in the request")
@@ -76,23 +78,19 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	taskToStop, exists := a.Worker.getTask(tID)
-	if !exists {
-		log.Printf("No task with ID %v found\n", tID)
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-
-	taskCopy := taskToStop
-	taskCopy.State = task.Completed
-	if err := a.Worker.AddTask(taskCopy); err != nil {
+	if err := a.Worker.ForgetTask(tID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// an active task whose container could not be stopped or gets a store error: the manager's reconciliation retries the forget
 		if responseErr := handlers.HttpResponseHelper(w, err.Error(), http.StatusInternalServerError); responseErr != nil {
 			log.Printf(handlers.ErrorEncodingJson, responseErr)
 		}
 		return
 	}
 
-	log.Printf("Added task %v to stop container %v\n", taskToStop.ID, taskToStop.ContainerID)
+	log.Printf("Forgot task %v\n", tID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

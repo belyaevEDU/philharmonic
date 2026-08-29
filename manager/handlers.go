@@ -2,6 +2,7 @@ package manager
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/belyaevedu/philharmonic/auth"
 	"github.com/belyaevedu/philharmonic/handlers"
+	"github.com/belyaevedu/philharmonic/store"
 	"github.com/belyaevedu/philharmonic/task"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -124,10 +126,13 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 	// stopping a Pending task cancels its queued start and removes it from the
 	// db; it has not reached a worker yet, so there is no owner to stop.
-	// Completed tasks are also cleaned up. A Failed task is cleaned up only
-	// after it has reached its restart cap
+	// Completed tasks are also cleaned up.
+	// A Failed task is cleaned up once it is terminal:
+	// at its restart cap or already terminal-stamped
 	if taskToStop.State == task.Pending || taskToStop.State == task.Completed ||
-		(taskToStop.State == task.Failed && taskToStop.RestartCount >= taskToStop.EffectiveMaxRestarts(MaxRestarts)) {
+		a.Manager.taskWorker(taskToStop.ID) == "" ||
+		(taskToStop.State == task.Failed &&
+			(taskToStop.AtRestartCap(MaxRestarts) || taskToStop.IsTerminal())) {
 		if err := a.Manager.deleteTask(taskToStop); err != nil {
 			msg := fmt.Sprintf("Error deleting task %s: %v\n", taskToStop.ID, err)
 			responseErr := handlers.HttpResponseHelper(w, msg, http.StatusInternalServerError)
@@ -143,6 +148,25 @@ func (a *Api) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 	taskCopy := taskToStop
 	taskCopy.State = task.Completed
+	taskCopy.ManuallyStopped = true
+
+	// recorded before the stop event is queued: queuing first would leave an
+	// unflagged stop in flight, which clean-exit restart policies could undo
+	if err := a.Manager.markStopRequested(taskToStop.ID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// the task vanished between resolution and the stop request.
+			// report the miss instead of an internal error
+			log.Printf("Task %s disappeared while being stopped\n", taskToStop.ID)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		msg := fmt.Sprintf("Error recording stop request for task %s: %v\n", taskToStop.ID, err)
+		responseErr := handlers.HttpResponseHelper(w, msg, http.StatusInternalServerError)
+		if responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
+		}
+		return
+	}
 
 	te := task.TaskEvent{
 		ID:        uuid.New(),

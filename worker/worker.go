@@ -42,6 +42,10 @@ type Worker struct {
 	LogDb store.Store[task.TaskLogs]
 	Stats *stats.Stats
 
+	// stopTaskForForget runs the container stop when forgetting an active
+	// task; overridden in tests. nil means StopTask
+	stopTaskForForget func(t task.Task) task.DockerResult
+
 	// owns the single bbolt file backing all three stores in bolt mode.
 	// is nil for memory mode
 	// the stores themselves are bucket views on it
@@ -367,6 +371,19 @@ func (w *Worker) queueLen() int {
 	return w.Queue.Len()
 }
 
+// merges a queued event with the worker's persisted record for the task.
+// the worker's container knowledge wins
+func mergeQueuedWithPersisted(queued task.Task, persisted *task.Task) task.Task {
+	if queued.ContainerID == "" {
+		queued.ContainerID = persisted.ContainerID
+	}
+	// a stop must target the container this worker currently runs for the task
+	if queued.State == task.Completed && persisted.ContainerID != "" {
+		queued.ContainerID = persisted.ContainerID
+	}
+	return queued
+}
+
 // action is picked depending on the task's state
 func (w *Worker) runTask() task.DockerResult {
 	taskQueued, ok := w.Queue.Dequeue()
@@ -411,9 +428,7 @@ func (w *Worker) runTask() task.DockerResult {
 	// doubling prevention.
 	// in these stages, considering the fact that manager updates task via 10 second period,
 	// we prioritize the info stored on the worker
-	if taskQueued.ContainerID == "" {
-		taskQueued.ContainerID = taskPersisted.ContainerID
-	}
+	taskQueued = mergeQueuedWithPersisted(taskQueued, taskPersisted)
 	persistedState := taskPersisted.State
 	w.dbMu.Unlock()
 
@@ -569,6 +584,75 @@ func (w *Worker) StopTask(t task.Task) task.DockerResult {
 	}
 
 	return result
+}
+
+func (w *Worker) ForgetTask(id uuid.UUID) error {
+	w.dbMu.RLock()
+	if w.Db == nil {
+		w.dbMu.RUnlock()
+		return errors.New("worker db is nil")
+	}
+	persisted, err := w.Db.Get(id)
+	if err != nil {
+		w.dbMu.RUnlock()
+		return err // ErrNotFound usually
+	}
+	persistedTask := *persisted
+	active := persistedTask.State == task.Scheduled || persistedTask.State == task.Running
+	w.dbMu.RUnlock()
+
+	// drop queued events for every lifecycle state
+	w.Queue.RemoveAllFunc(func(t task.Task) bool {
+		return t.ID == id
+	})
+
+	if active {
+		if persistedTask.ContainerID != "" {
+			// stop takes dbmu itself
+			stop := w.stopTaskForForget
+			if stop == nil {
+				stop = w.StopTask
+			}
+			if result := stop(persistedTask); result.Error != nil {
+				return fmt.Errorf("stopping active task %s before forget: %w", id, result.Error)
+			}
+		}
+	}
+
+	w.dbMu.Lock()
+	defer w.dbMu.Unlock()
+
+	if w.Db == nil {
+		return errors.New("worker db is nil")
+	}
+
+	// re-read: the record may have changed (or vanished) while the stop ran
+	current, err := w.Db.Get(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil // already gone
+		}
+		return err
+	}
+	if current.ContainerID != "" && (current.State == task.Scheduled || current.State == task.Running) {
+		// something reactivated the task while the stop ran.
+		// deleting now would orphan a live container.
+		// the manager's next reconciliation retries the forget against the reactivated record
+		return fmt.Errorf("task %s became active again while being forgotten", id)
+	}
+	if err := w.Db.Delete(id); err != nil {
+		return err
+	}
+
+	// lock ordering: dbMu -> logMu. nothing takes them the other way around
+	w.logMu.Lock()
+	defer w.logMu.Unlock()
+	if w.LogDb != nil {
+		if err := w.LogDb.Delete(id); err != nil {
+			log.Printf("Error deleting stored logs for forgotten task %s: %v\n", id, err)
+		}
+	}
+	return nil
 }
 
 func (w *Worker) RunTasks(ctx context.Context) {
@@ -845,8 +929,10 @@ func (w *Worker) timeoutTask(t task.Task) {
 	updated := *persisted
 	updated.State = task.Failed
 	updated.FailureReason = fmt.Sprintf("task timed out after %d seconds", t.Timeout)
-	updated.FinishTime = time.Now().UTC()
 	updated.HostPorts = nil
+	// no FinishTime: a timeout is a retryable failure, and Failed +
+	// FinishTime is the manager's terminal stamp; a timed-out task must
+	// stay restartable until it reaches its restart cap
 	if err := w.Db.Put(updated.ID, &updated); err != nil {
 		log.Printf("error storing timed out task %s: %v\n", updated.ID, err)
 	}

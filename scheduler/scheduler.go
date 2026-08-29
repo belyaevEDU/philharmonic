@@ -1,7 +1,6 @@
 package scheduler
 
 import (
-	"log"
 	"math"
 
 	"github.com/belyaevedu/philharmonic/node"
@@ -92,11 +91,12 @@ func NewEpvm() *Epvm {
 func (e *Epvm) SelectCandidateNodes(t *task.Task, nodes []*node.Node) []*node.Node {
 	var candidates []*node.Node
 	for _, n := range nodes {
-		if _, err := n.GetStats(); err != nil {
-			log.Printf("Error fetching stats for node %s: %v", n.Address, err)
+		// there is a collection loop that gatheres the stats
+		snap := n.Snapshot()
+		if snap.MemoryTotalKB <= 0 {
 			continue
 		}
-		if checkDisk(t, n.Snapshot().DiskFreeB) {
+		if checkDisk(t, snap.DiskFreeB) {
 			candidates = append(candidates, n)
 		}
 	}
