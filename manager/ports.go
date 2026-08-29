@@ -56,3 +56,12 @@ func (m *Manager) canHost(t *task.Task, occ *worker.OccupiedPorts, excludeOwnPor
 func (m *Manager) fetchWorkerPorts(n *node.Node) (*worker.OccupiedPorts, error) {
 	return n.GetPorts()
 }
+
+func hostPortFor(ports []task.PortMapping, containerPort int) int {
+	for _, pm := range ports {
+		if pm.ContainerPort == containerPort && pm.HostPort != 0 {
+			return pm.HostPort
+		}
+	}
+	return 0
+}
