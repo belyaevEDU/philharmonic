@@ -79,17 +79,13 @@ func (a *Api) ForgetTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.Worker.ForgetTask(tID); err != nil {
-		switch {
-		case errors.Is(err, store.ErrNotFound):
+		if errors.Is(err, store.ErrNotFound) {
 			w.WriteHeader(http.StatusNotFound)
-		case errors.Is(err, errTaskStillActive):
-			if responseErr := handlers.HttpResponseHelper(w, err.Error(), http.StatusConflict); responseErr != nil {
-				log.Printf(handlers.ErrorEncodingJson, responseErr)
-			}
-		default:
-			if responseErr := handlers.HttpResponseHelper(w, err.Error(), http.StatusInternalServerError); responseErr != nil {
-				log.Printf(handlers.ErrorEncodingJson, responseErr)
-			}
+			return
+		}
+		// an active task whose container could not be stopped or gets a store error: the manager's reconciliation retries the forget
+		if responseErr := handlers.HttpResponseHelper(w, err.Error(), http.StatusInternalServerError); responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
 		}
 		return
 	}
