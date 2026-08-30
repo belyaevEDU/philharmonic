@@ -12,6 +12,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/containerd/errdefs"
@@ -133,6 +134,8 @@ type Task struct {
 	Memory        int64
 	Disk          int64
 	Ports         []PortMapping
+	Cmd           []string
+	Env           []string
 	RestartPolicy string
 	HostPorts     []PortMapping // resolved bindings reported by the daemon
 
@@ -215,13 +218,29 @@ func NewConfig(t *Task) *Config {
 	return &Config{
 		Name:          t.Name,
 		Ports:         t.Ports,
+		Cmd:           t.Cmd,
 		Image:         t.Image,
 		Cpu:           t.Cpu,
 		Memory:        t.Memory,
 		Disk:          t.Disk,
+		Env:           t.Env,
 		RestartPolicy: t.RestartPolicy,
 		HealthCheck:   t.HealthCheck,
 	}
+}
+
+// validates env entries in KEY=VALUE form
+func ValidateEnv(env []string) error {
+	for _, e := range env {
+		key, _, found := strings.Cut(e, "=")
+		if !found {
+			return fmt.Errorf("invalid env entry %q: want KEY=VALUE", e)
+		}
+		if key == "" {
+			return fmt.Errorf("invalid env entry %q: empty key", e)
+		}
+	}
+	return nil
 }
 
 // SCTP is intentionally unsupported, since the worker has no reliable SCTP inventory
@@ -521,6 +540,7 @@ func (d *Docker) Run() DockerResult {
 	cc := container.Config{
 		Image:        d.Config.Image,
 		Tty:          false,
+		Cmd:          d.Config.Cmd,
 		Env:          d.Config.Env,
 		ExposedPorts: exposed,
 		Healthcheck:  d.Config.dockerHealthcheck(),
