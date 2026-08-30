@@ -1,5 +1,5 @@
 # Philharmonic
-**⚠️ in progress**
+**⚠️ final touches and docs in progress**
 
 Инструмент для оркестрации контейнеров.
 
