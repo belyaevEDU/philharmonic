@@ -331,19 +331,8 @@ func (w *Worker) setTask(t task.Task) {
 }
 
 func (w *Worker) AddTask(t task.Task) error {
-	if t.State != task.Completed {
-		if err := task.ValidatePortMappings(t.Ports); err != nil {
-			return err
-		}
-		if err := task.ValidateRestartPolicy(t.RestartPolicy); err != nil {
-			return err
-		}
-		if t.Timeout < 0 {
-			return fmt.Errorf("task timeout must not be negative, got %d", t.Timeout)
-		}
-		if t.MaxRestarts < 0 {
-			return fmt.Errorf("task max_restarts must not be negative, got %d", t.MaxRestarts)
-		}
+	if err := t.Validate(); err != nil {
+		return err
 	}
 
 	w.dbMu.Lock()
@@ -484,15 +473,7 @@ func (w *Worker) StartTask(t task.Task) task.DockerResult {
 		log.Printf("Starting task %s\n", t.ID)
 	}
 
-	if err := task.ValidatePortMappings(t.Ports); err != nil {
-		t.State = task.Failed
-		t.HostPorts = nil
-		t.FailureReason = err.Error()
-		w.setTask(t)
-		return task.DockerResult{Error: err}
-	}
-
-	if err := task.ValidateRestartPolicy(t.RestartPolicy); err != nil {
+	if err := t.Validate(); err != nil {
 		t.State = task.Failed
 		t.HostPorts = nil
 		t.FailureReason = err.Error()

@@ -46,18 +46,6 @@ const (
 	RestartPolicyUnlessStopped = "unless-stopped"
 )
 
-// accepts an empty policy, defaults to on-failure
-func ValidateRestartPolicy(p string) error {
-	switch p {
-	case "", RestartPolicyNone, RestartPolicyAlways, RestartPolicyOnFailure, RestartPolicyUnlessStopped:
-		return nil
-	}
-	return fmt.Errorf(
-		"invalid restart policy %q: want %q, %q, %q, %q or empty",
-		p, RestartPolicyNone, RestartPolicyAlways, RestartPolicyOnFailure, RestartPolicyUnlessStopped,
-	)
-}
-
 // reports whether a Failed task with this policy
 // may be restarted by the orchestrator
 func ShouldRestart(policy string) bool {
@@ -124,6 +112,45 @@ func (h *HealthCheck) Normalized() HealthCheck {
 	return n
 }
 
+// mirrors compose's hardening-related options
+type Security struct {
+	// "uid", "uid:gid"
+	User string
+
+	// extra groups the container process belongs to
+	GroupAdd []string
+
+	// kernel capabilities
+	CapAdd  []string
+	CapDrop []string
+
+	// mount an empty tmpfs at each path. "<path>:<options>"
+	Tmpfs []string
+
+	ReadOnlyRootfs  bool
+	NoNewPrivileges bool
+	Privileged      bool
+
+	PidsLimit int64
+
+	// per-resource rlimits for the container process, e.g. nofile
+	Ulimits []Ulimit
+
+	// "", "private", "shareable", "none" or "host"
+	IpcMode string
+
+	// re-map the container's UIDs through a user namespace
+	UsernsMode string
+}
+
+// a single ulimit entry for Security.Ulimits
+// Soft/Hard of -1 means "unlimited"
+type Ulimit struct {
+	Name string
+	Soft int64
+	Hard int64
+}
+
 type Task struct {
 	ID            uuid.UUID
 	ContainerID   string
@@ -140,6 +167,7 @@ type Task struct {
 	HostPorts     []PortMapping // resolved bindings reported by the daemon
 
 	HealthCheck     *HealthCheck
+	Security        *Security `json:",omitempty"` // container hardening options
 	RestartCount    int
 	MaxRestarts     int    // per-task restart cap; 0 = fall back to manager.MaxRestarts
 	FailureReason   string `json:",omitempty"`
@@ -212,6 +240,7 @@ type Config struct {
 	Env           []string
 	RestartPolicy string
 	HealthCheck   *HealthCheck
+	Security      *Security
 }
 
 func NewConfig(t *Task) *Config {
@@ -226,76 +255,55 @@ func NewConfig(t *Task) *Config {
 		Env:           t.Env,
 		RestartPolicy: t.RestartPolicy,
 		HealthCheck:   t.HealthCheck,
+		Security:      t.Security,
 	}
 }
 
-// validates env entries in KEY=VALUE form
-func ValidateEnv(env []string) error {
-	for _, e := range env {
-		key, _, found := strings.Cut(e, "=")
-		if !found {
-			return fmt.Errorf("invalid env entry %q: want KEY=VALUE", e)
-		}
-		if key == "" {
-			return fmt.Errorf("invalid env entry %q: empty key", e)
-		}
+// host tmpfs mounts as the docker API wants them: path -> options.
+// tmpfs options never contain colons, so the first ":" separates path from options
+func (s *Security) dockerTmpfs() map[string]string {
+	if s == nil || len(s.Tmpfs) == 0 {
+		return nil
 	}
-	return nil
+	m := make(map[string]string, len(s.Tmpfs))
+	for _, e := range s.Tmpfs {
+		path, opts, _ := strings.Cut(e, ":")
+		m[path] = opts
+	}
+	return m
 }
 
-// SCTP is intentionally unsupported, since the worker has no reliable SCTP inventory
-func ValidatePortMappings(mappings []PortMapping) error {
-	containerPorts := make(map[network.Port]struct{}, len(mappings))
-	hostPorts := make(map[string]struct{}, len(mappings))
-
-	for _, pm := range mappings {
-		if pm.ContainerPort < 1 || pm.ContainerPort > 65535 {
-			return fmt.Errorf("invalid container port %d in port mapping", pm.ContainerPort)
-		}
-		if pm.HostPort < 0 || pm.HostPort > 65535 {
-			return fmt.Errorf("invalid host port %d in port mapping", pm.HostPort)
-		}
-
-		proto := network.TCP
-		if pm.Protocol != "" {
-			proto = pm.Protocol
-		}
-		if proto == network.SCTP {
-			return fmt.Errorf("sctp port mappings are not supported")
-		}
-		if proto != network.TCP && proto != network.UDP {
-			return fmt.Errorf("invalid protocol %s in port mapping (want tcp or udp)", pm.Protocol)
-		}
-
-		port, ok := network.PortFrom(clampToUint16(pm.ContainerPort), proto)
-		if !ok {
-			return fmt.Errorf("invalid port mapping %d/%s", pm.ContainerPort, proto)
-		}
-		if _, exists := containerPorts[port]; exists {
-			return fmt.Errorf("duplicate container port mapping %d/%s", pm.ContainerPort, proto)
-		}
-		containerPorts[port] = struct{}{}
-
-		if pm.HostPort != 0 {
-			key := string(proto) + ":" + strconv.Itoa(pm.HostPort)
-			if _, exists := hostPorts[key]; exists {
-				return fmt.Errorf("duplicate host port mapping %d/%s", pm.HostPort, proto)
-			}
-			hostPorts[key] = struct{}{}
-		}
+// SecurityOpt entries for the docker API
+func (s *Security) dockerSecurityOpts() []string {
+	if s == nil {
+		return nil
 	}
-	return nil
+	var opts []string
+	if s.NoNewPrivileges {
+		opts = append(opts, "no-new-privileges:true")
+	}
+	return opts
 }
 
-// gosec G115 fix: preventing overflow
-func clampToUint16(i int) uint16 {
-	if i < 0 {
-		return 0
+// ulimits as the docker API wants them
+func (s *Security) dockerUlimits() []*container.Ulimit {
+	if s == nil || len(s.Ulimits) == 0 {
+		return nil
 	}
-	if i > math.MaxUint16 {
-		return math.MaxUint16
+	out := make([]*container.Ulimit, 0, len(s.Ulimits))
+	for _, u := range s.Ulimits {
+		out = append(out, &container.Ulimit{Name: u.Name, Soft: u.Soft, Hard: u.Hard})
 	}
-	return uint16(i)
+	return out
+}
+
+// nil unless a positive PIDs limit was requested
+func (s *Security) dockerPidsLimit() *int64 {
+	if s == nil || s.PidsLimit <= 0 {
+		return nil
+	}
+	limit := s.PidsLimit
+	return &limit
 }
 
 func (c *Config) dockerPorts() (network.PortSet, network.PortMap, error) {
@@ -550,6 +558,26 @@ func (d *Docker) Run() DockerResult {
 		RestartPolicy: rp,
 		Resources:     r,
 		PortBindings:  bindings,
+	}
+
+	// security/hardening options. a nil Security means "no options" -> runs with daemon defaults
+	if sec := d.Config.Security; sec != nil {
+		cc.User = sec.User
+		hc.CapAdd = sec.CapAdd
+		hc.CapDrop = sec.CapDrop
+		hc.GroupAdd = sec.GroupAdd
+		hc.Tmpfs = sec.dockerTmpfs()
+		hc.ReadonlyRootfs = sec.ReadOnlyRootfs
+		hc.SecurityOpt = sec.dockerSecurityOpts()
+		hc.Privileged = sec.Privileged
+		hc.IpcMode = container.IpcMode(sec.IpcMode)
+		hc.UsernsMode = container.UsernsMode(sec.UsernsMode)
+		hc.PidsLimit = sec.dockerPidsLimit()
+		hc.Ulimits = sec.dockerUlimits()
+
+		if sec.Privileged {
+			log.Printf("Warning: container %q runs privileged; most other security options are void\n", d.Config.Name)
+		}
 	}
 
 	// requires either Image or Config.Image to be set, not both

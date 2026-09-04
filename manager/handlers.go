@@ -35,42 +35,14 @@ func (a *Api) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 	te.ID = uuid.New()
 
-	if te.State != task.Completed && te.Task.State != task.Completed {
-		if err := task.ValidatePortMappings(te.Task.Ports); err != nil {
-			if responseErr := handlers.HttpResponseHelper(w, err.Error(), http.StatusBadRequest); responseErr != nil {
-				log.Printf(handlers.ErrorEncodingJson, responseErr)
-			}
-			return
+	if err := te.Task.Validate(); err != nil {
+		if responseErr := handlers.HttpResponseHelper(w, err.Error(), http.StatusBadRequest); responseErr != nil {
+			log.Printf(handlers.ErrorEncodingJson, responseErr)
 		}
-		if err := task.ValidateRestartPolicy(te.Task.RestartPolicy); err != nil {
-			if responseErr := handlers.HttpResponseHelper(w, err.Error(), http.StatusBadRequest); responseErr != nil {
-				log.Printf(handlers.ErrorEncodingJson, responseErr)
-			}
-			return
-		}
-		if err := task.ValidateEnv(te.Task.Env); err != nil {
-			if responseErr := handlers.HttpResponseHelper(w, err.Error(), http.StatusBadRequest); responseErr != nil {
-				log.Printf(handlers.ErrorEncodingJson, responseErr)
-			}
-			return
-		}
-		if te.Task.Timeout < 0 {
-			msg := fmt.Sprintf("task timeout must not be negative, got %d", te.Task.Timeout)
-			if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusBadRequest); responseErr != nil {
-				log.Printf(handlers.ErrorEncodingJson, responseErr)
-			}
-			return
-		}
-		if te.Task.MaxRestarts < 0 {
-			msg := fmt.Sprintf("task max_restarts must not be negative, got %d", te.Task.MaxRestarts)
-			if responseErr := handlers.HttpResponseHelper(w, msg, http.StatusBadRequest); responseErr != nil {
-				log.Printf(handlers.ErrorEncodingJson, responseErr)
-			}
-			return
-		}
-		if te.Task.ID == uuid.Nil {
-			te.Task.ID = uuid.New()
-		}
+		return
+	}
+	if te.Task.ID == uuid.Nil {
+		te.Task.ID = uuid.New()
 	}
 
 	err = a.Manager.AddTask(te)
