@@ -13,22 +13,12 @@ import (
 // task record lifecycle: acceptance into the pending queue, deletion, and reads
 
 func (m *Manager) AddTask(te task.TaskEvent) error {
-	// A task ID identifies one task lifecycle.
-	// stops are allowed through even for legacy tasks whose mappings are no longer accepted,
-	// so they can still clean up an existing container
+	if err := te.Task.Validate(); err != nil {
+		return err
+	}
+
+	// a task ID identifies one task lifecycle
 	if te.State != task.Completed && te.Task.State != task.Completed {
-		if err := task.ValidatePortMappings(te.Task.Ports); err != nil {
-			return err
-		}
-		if err := task.ValidateRestartPolicy(te.Task.RestartPolicy); err != nil {
-			return err
-		}
-		if te.Task.Timeout < 0 {
-			return fmt.Errorf("task timeout must not be negative, got %d", te.Task.Timeout)
-		}
-		if te.Task.MaxRestarts < 0 {
-			return fmt.Errorf("task max_restarts must not be negative, got %d", te.Task.MaxRestarts)
-		}
 		m.mu.Lock()
 		if m.TaskDb == nil {
 			m.mu.Unlock()
