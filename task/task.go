@@ -572,8 +572,8 @@ func (d *Docker) Run() DockerResult {
 		hc.Privileged = sec.Privileged
 		hc.IpcMode = container.IpcMode(sec.IpcMode)
 		hc.UsernsMode = container.UsernsMode(sec.UsernsMode)
-		hc.Resources.PidsLimit = sec.dockerPidsLimit()
-		hc.Resources.Ulimits = sec.dockerUlimits()
+		hc.PidsLimit = sec.dockerPidsLimit()
+		hc.Ulimits = sec.dockerUlimits()
 
 		if sec.Privileged {
 			log.Printf("Warning: container %q runs privileged; most other security options are void\n", d.Config.Name)
