@@ -10,13 +10,6 @@ import (
 	"github.com/moby/moby/api/types/network"
 )
 
-// Validate collects every validation problem in the task's spec into one
-// joined error, so a caller sees all problems at once rather than only the
-// first. It returns nil for a valid spec.
-//
-// It covers everything the orchestrator checks before accepting or
-// (re)starting a task: port mappings, restart policy, env, security
-// options, and sanity of Timeout / MaxRestarts.
 func (t Task) Validate() error {
 	var errs []error
 
