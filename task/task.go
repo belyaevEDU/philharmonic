@@ -46,18 +46,6 @@ const (
 	RestartPolicyUnlessStopped = "unless-stopped"
 )
 
-// accepts an empty policy, defaults to on-failure
-func ValidateRestartPolicy(p string) error {
-	switch p {
-	case "", RestartPolicyNone, RestartPolicyAlways, RestartPolicyOnFailure, RestartPolicyUnlessStopped:
-		return nil
-	}
-	return fmt.Errorf(
-		"invalid restart policy %q: want %q, %q, %q, %q or empty",
-		p, RestartPolicyNone, RestartPolicyAlways, RestartPolicyOnFailure, RestartPolicyUnlessStopped,
-	)
-}
-
 // reports whether a Failed task with this policy
 // may be restarted by the orchestrator
 func ShouldRestart(policy string) bool {
